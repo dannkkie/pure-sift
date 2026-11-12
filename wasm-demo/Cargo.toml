@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "pure-sift-wasm-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pure-sift = { path = "..", default-features = false }
+wasm-bindgen = "0.2.130"
+
+[profile.release]
+opt-level = 3
+lto = true

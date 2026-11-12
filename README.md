@@ -1,8 +1,11 @@
 # pure-sift
 
 [![CI](https://github.com/dannkkie/pure-sift/actions/workflows/ci.yml/badge.svg)](https://github.com/dannkkie/pure-sift/actions/workflows/ci.yml)
+[![Live WASM Demo](https://img.shields.io/badge/demo-Live%20WASM%20in%20Browser-38bdf8.svg)](https://dannkkie.github.io/pure-sift/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust: #![forbid(unsafe_code)]](https://img.shields.io/badge/rust-%23!%5Bforbid(unsafe__code)%5D-success.svg)](src/lib.rs)
+
+> **[Try the Live In-Browser WebAssembly Demo →](https://dannkkie.github.io/pure-sift/)** — drag and drop two images to run SIFT feature extraction, RANSAC matching, and homography stitching 100% locally in your browser (no Rust install or server upload required).
 
 A **100% pure-Rust**, zero-`unsafe` (`#![forbid(unsafe_code)]`) computer vision engine, CLI, visual catalog indexer, and Axum HTTP workbench implementing **SIFT** (*Scale-Invariant Feature Transform*, expired patent `US6711293B1`), **2D Similarity RANSAC**, and **4-Point DLT Planar Homography RANSAC**.
 

@@ -1,0 +1,10 @@
+D:\Projects\native_vision_tool\wasm-demo\target\wasm32-unknown-unknown\release\deps\avif_serialize-d4b71681127f68f7.d: C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\lib.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\boxes.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\constants.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\writer.rs
+
+D:\Projects\native_vision_tool\wasm-demo\target\wasm32-unknown-unknown\release\deps\libavif_serialize-d4b71681127f68f7.rlib: C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\lib.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\boxes.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\constants.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\writer.rs
+
+D:\Projects\native_vision_tool\wasm-demo\target\wasm32-unknown-unknown\release\deps\libavif_serialize-d4b71681127f68f7.rmeta: C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\lib.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\boxes.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\constants.rs C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\writer.rs
+
+C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\lib.rs:
+C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\boxes.rs:
+C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\constants.rs:
+C:\Users\eddie\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\avif-serialize-0.8.9\src\writer.rs:
