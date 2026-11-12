@@ -19,9 +19,13 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - run: cargo fmt --all -- --check
-      - run: cargo fmt --manifest-path wasm-demo/Cargo.toml -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --no-default-features --all-targets -- -D warnings
-      - run: cargo check --manifest-path wasm-demo/Cargo.toml --target wasm32-unknown-unknown
+      - run: cargo check --target wasm32-unknown-unknown --no-default-features --lib
+      - run: |
+          if [ -f wasm-demo/Cargo.toml ]; then
+            cargo fmt --manifest-path wasm-demo/Cargo.toml -- --check
+            cargo check --manifest-path wasm-demo/Cargo.toml --target wasm32-unknown-unknown
+          fi
       - run: cargo test --release
       - run: cargo test --no-default-features --release
