@@ -1,1 +1,0 @@
-D:\Projects\native_vision_tool\wasm-demo\target\wasm32-unknown-unknown\release\pure_sift_wasm_demo.wasm: D:\Projects\native_vision_tool\src\catalog.rs D:\Projects\native_vision_tool\src\cli.rs D:\Projects\native_vision_tool\src\lib.rs D:\Projects\native_vision_tool\src\pipeline.rs D:\Projects\native_vision_tool\src\visualize.rs D:\Projects\native_vision_tool\wasm-demo\src\lib.rs
