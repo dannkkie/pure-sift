@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Native Vision Engine — Interactive SIFT &amp; RANSAC Workbench</title>
+  <style>
+    :root {
+      --bg: #0b101b;
+      --surface: #121a2b;
+      --surface-2: #182238;
+      --border: #26344f;
+      --text: #e6edf7;
+      --muted: #93a4c3;
+      --accent: #38bdf8;
+      --accent-2: #818cf8;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --err: #f87171;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: radial-gradient(circle at top right, #17233d 0%, var(--bg) 52%);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.45;
+    }
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 20px 24px 48px;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .title-group h1 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .badge.ok {
+      color: var(--ok);
+      border-color: rgba(52, 211, 153, 0.35);
+      background: rgba(52, 211, 153, 0.08);
+    }
+    .badge.err {
+      color: var(--err);
+      border-color: rgba(248, 113, 113, 0.35);
+      background: rgba(248, 113, 113, 0.08);
+    }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+    .showcase-bar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .showcase-label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .showcase-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .preset-btn {
+      appearance: none;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 9px;
+      padding: 7px 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .preset-btn:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.1);
+    }
+    .preset-btn.active {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.16);
+      color: #e0f2fe;
+    }
+    .preset-btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .tab-btn {
+      appearance: none;
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      padding: 10px 16px;
+      border-radius: 10px;
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .tab-btn:hover { color: var(--text); border-color: #3a4f78; }
+    .tab-btn.active {
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.16), rgba(129, 140, 248, 0.16));
+      color: var(--text);
+      border-color: var(--accent);
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+    }
+    .panel h2 {
+      margin: 0 0 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .dropzone {
+      position: relative;
+      border: 1.5px dashed #3a5078;
+      border-radius: 12px;
+      background: var(--surface-2);
+      padding: 14px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+      margin-bottom: 12px;
+    }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.08);
+    }
+    .dropzone input[type="file"] {
+      display: none;
+    }
+    .dropzone-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text);
+      display: block;
+    }
+    .dropzone-meta {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 3px;
+      word-break: break-all;
+    }
+    .preview-thumb {
+      max-width: 100%;
+      max-height: 110px;
+      border-radius: 8px;
+      margin-top: 8px;
+      border: 1px solid var(--border);
+      display: none;
+    }
+    .controls-grid {
+      display: grid;
+      gap: 12px;
+      margin: 14px 0 16px;
+    }
+    .control-row label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .control-row label span.val {
+      font-family: var(--mono);
+      color: var(--accent);
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    input[type="text"] {
+      width: 100%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.86rem;
+      margin-bottom: 10px;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.84rem;
+      color: var(--text);
+    }
+    .btn-row {
+      display: grid;
+      gap: 8px;
+    }
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--surface-2);
+      color: var(--text);
+      transition: all 0.15s ease;
+    }
+    .btn:hover:not(:disabled) { border-color: #4b6799; }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn.primary {
+      background: linear-gradient(135deg, #0284c7, #4f46e5);
+      border-color: transparent;
+      color: #fff;
+    }
+    .btn.primary:hover:not(:disabled) {
+      filter: brightness(1.08);
+    }
+    .btn.secondary {
+      font-size: 0.82rem;
+      padding: 8px 12px;
+      color: var(--muted);
+    }
+    .btn.secondary:hover:not(:disabled) {
+      color: var(--text);
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .metric-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .metric-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    .metric-value {
+      font-family: var(--mono);
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-top: 3px;
+      color: var(--text);
+    }
+    .status-banner {
+      display: none;
+      padding: 10px 12px;
+      border-radius: 10px;
+      margin-bottom: 14px;
+      font-size: 0.86rem;
+      border: 1px solid var(--border);
+    }
+    .status-banner.error {
+      display: block;
+      background: rgba(248, 113, 113, 0.1);
+      border-color: rgba(248, 113, 113, 0.4);
+      color: #fecaca;
+    }
+    .status-banner.info {
+      display: block;
+      background: rgba(56, 189, 248, 0.1);
+      border-color: rgba(56, 189, 248, 0.35);
+      color: #bae6fd;
+    }
+    .subtabs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .subtab-pills {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .pill-btn {
+      background: var(--surface-2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .pill-btn.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.1);
+    }
+    .stage {
+      background: #070b13;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      min-height: 360px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      overflow: auto;
+    }
+    .stage img {
+      max-width: 100%;
+      max-height: 640px;
+      border-radius: 6px;
+      display: block;
+    }
+    .placeholder {
+      color: var(--muted);
+      text-align: center;
+      max-width: 440px;
+      font-size: 0.9rem;
+    }
+    .matrix-box {
+      margin-top: 14px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      display: none;
+    }
+    .matrix-box h3 {
+      margin: 0 0 8px;
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+    .matrix-grid {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(90px, 1fr));
+      gap: 6px;
+    }
+    .matrix-cell {
+      background: #0c1322;
+      padding: 6px 8px;
+      border-radius: 6px;
+      text-align: right;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+      margin-top: 8px;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    td.mono { font-family: var(--mono); }
+    details {
+      margin-top: 14px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    summary {
+      cursor: pointer;
+      font-size: 0.84rem;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    pre {
+      margin: 10px 0 0;
+      max-height: 300px;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="title-group">
+        <h1>Native Vision Engine</h1>
+        <p class="subtitle">Pure-Rust SIFT (US6711293B1) with 3D Taylor Sub-Pixel Refinement, 80% Orientation Splitting &amp; RANSAC</p>
+      </div>
+      <div class="badges">
+        <span class="badge">#![forbid(unsafe_code)]</span>
+        <span class="badge" id="health-badge">Checking /health...</span>
+      </div>
+    </header>
+
+    <section class="showcase-bar" aria-label="Use-Case Showcase Presets">
+      <div>
+        <div class="showcase-label">Live Use-Case Showcase Presets</div>
+        <div id="showcase-caption" style="font-size:0.82rem;color:var(--muted);margin-top:2px;">
+          Pick a scenario to auto-generate domain frames, tune parameters, and run the Rust engine live.
+        </div>
+      </div>
+      <div class="showcase-pills">
+        <button class="preset-btn" data-preset="medical" type="button">Medical Scan Registration</button>
+        <button class="preset-btn" data-preset="tracking" type="button">Rigid Object Tracking</button>
+        <button class="preset-btn" data-preset="stitch" type="button">Aerial Mosaic Stitch</button>
+        <button class="preset-btn" data-preset="catalog" type="button">Visual Catalog Lookup</button>
+      </div>
+    </section>
+
+    <div class="tabs" role="tablist">
+      <button class="tab-btn active" data-mode="keypoints">1. Keypoints &amp; Descriptors</button>
+      <button class="tab-btn" data-mode="match">2. Match &amp; Stitch Alignment</button>
+      <button class="tab-btn" data-mode="catalog">3. Visual Catalog Search</button>
+    </div>
+
+    <div class="layout">
+      <aside class="panel">
+        <h2>Inputs &amp; Parameters</h2>
+
+        <div id="input-query-wrap">
+          <div class="dropzone" id="drop-query">
+            <input type="file" id="file-query" accept="image/png,image/jpeg,image/webp,image/*" />
+            <span class="dropzone-label" id="query-label">Drop Image (or click to browse)</span>
+            <div class="dropzone-meta" id="query-meta">No file selected</div>
+            <img class="preview-thumb" id="preview-query" alt="Query preview" />
+          </div>
+        </div>
+
+        <div id="input-target-wrap" class="hidden">
+          <div class="dropzone" id="drop-target">
+            <input type="file" id="file-target" accept="image/png,image/jpeg,image/webp,image/*" />
+            <span class="dropzone-label" id="target-label">Drop Target / Second Image (or click)</span>
+            <div class="dropzone-meta" id="target-meta">No file selected</div>
+            <img class="preview-thumb" id="preview-target" alt="Target preview" />
+          </div>
+        </div>
+
+        <div id="catalog-controls-wrap" class="hidden">
+          <label for="catalog-id-input" style="font-size:0.82rem;color:var(--muted);display:block;margin-bottom:4px;">Catalog Item ID (when indexing Query image)</label>
+          <input type="text" id="catalog-id-input" placeholder="e.g. product-front.png" />
+          <div class="btn-row" style="margin-bottom:12px;">
+            <button class="btn" id="btn-catalog-index" type="button">Index Image into Live Catalog</button>
+          </div>
+        </div>
+
+        <div class="controls-grid">
+          <div class="control-row" id="ctrl-octaves">
+            <label>Octaves <span class="val" id="val-octaves">3</span></label>
+            <input type="range" id="param-octaves" min="1" max="6" step="1" value="3" />
+          </div>
+          <div class="control-row" id="ctrl-scales">
+            <label>Scales / Octave <span class="val" id="val-scales">3</span></label>
+            <input type="range" id="param-scales" min="3" max="6" step="1" value="3" />
+          </div>
+          <div class="control-row" id="ctrl-threshold">
+            <label>DoG Contrast Threshold <span class="val" id="val-threshold">0.020</span></label>
+            <input type="range" id="param-threshold" min="0.005" max="0.100" step="0.005" value="0.020" />
+          </div>
+          <div class="control-row hidden" id="ctrl-ratio">
+            <label>Lowe Ratio (d1 / d2) <span class="val" id="val-ratio">0.75</span></label>
+            <input type="range" id="param-ratio" min="0.40" max="0.95" step="0.05" value="0.75" />
+          </div>
+          <div class="control-row hidden" id="ctrl-ransac">
+            <label>RANSAC Inlier Threshold (px) <span class="val" id="val-ransac">3.0</span></label>
+            <input type="range" id="param-ransac" min="0.5" max="15.0" step="0.5" value="3.0" />
+          </div>
+          <label class="checkbox-row hidden" id="ctrl-ransac-enabled">
+            <input type="checkbox" id="param-ransac-enabled" checked />
+            Enable Geometric RANSAC Filtering
+          </label>
+          <label class="checkbox-row" id="ctrl-descriptors">
+            <input type="checkbox" id="param-descriptors" />
+            Include 128-D Descriptors in JSON
+          </label>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn primary" id="btn-run" type="button">Run Pipeline</button>
+          <button class="btn secondary" id="btn-demo" type="button">Load Built-In Synthetic Demo Images</button>
+        </div>
+      </aside>
+
+      <main class="panel">
+        <div id="status-banner" class="status-banner"></div>
+
+        <div class="metrics-grid" id="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-label">Status</div>
+            <div class="metric-value" id="m-status">Ready</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Round-Trip</div>
+            <div class="metric-value" id="m-time">--</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Keypoints / Features</div>
+            <div class="metric-value" id="m-count">--</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Geometry / Alignment</div>
+            <div class="metric-value" id="m-geom">--</div>
+          </div>
+        </div>
+
+        <div id="visual-results-wrap">
+          <div class="subtabs">
+            <div class="subtab-pills" id="view-pills">
+              <button class="pill-btn active" data-view="keypoints" id="pill-keypoints">Keypoint Overlay</button>
+              <button class="pill-btn hidden" data-view="matches" id="pill-matches">Inlier Correspondences</button>
+              <button class="pill-btn hidden" data-view="stitch" id="pill-stitch">Warped Stitch Panorama</button>
+            </div>
+            <a class="btn secondary hidden" id="download-png" download="vision_output.png">Download PNG</a>
+          </div>
+
+          <div class="stage" id="visual-stage">
+            <div class="placeholder">
+              Upload PNG/JPEG images on the left or click <strong>Load Built-In Synthetic Demo Images</strong>, then click <strong>Run Pipeline</strong> to render SIFT keypoints, correspondences, or homography alignment.
+            </div>
+          </div>
+
+          <div class="matrix-box" id="homography-box">
+            <h3>Estimated 3&times;3 Planar Homography Matrix (Query &rarr; Target)</h3>
+            <div class="matrix-grid" id="homography-grid"></div>
+          </div>
+        </div>
+
+        <div id="catalog-results-wrap" class="hidden">
+          <h2 style="margin-top:0;">Indexed Catalog &amp; Search Hits</h2>
+          <div id="catalog-search-hits"></div>
+          <h3 style="font-size:0.86rem;color:var(--muted);margin:16px 0 6px;">Current Server Catalog Entries</h3>
+          <div id="catalog-list-table"></div>
+        </div>
+
+        <details>
+          <summary>Raw JSON API Response</summary>
+          <pre id="raw-json">{}</pre>
+        </details>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const state = {
+        mode: "keypoints",
+        view: "keypoints",
+        queryFile: null,
+        targetFile: null,
+        blobUrls: {},
+      };
+
+      const el = (id) => document.getElementById(id);
+
+      const sliders = [
+        ["param-octaves", "val-octaves", (v) => String(parseInt(v, 10))],
+        ["param-scales", "val-scales", (v) => String(parseInt(v, 10))],
+        ["param-threshold", "val-threshold", (v) => Number(v).toFixed(3)],
+        ["param-ratio", "val-ratio", (v) => Number(v).toFixed(2)],
+        ["param-ransac", "val-ransac", (v) => Number(v).toFixed(1)],
+      ];
+      for (const [inputId, labelId, fmt] of sliders) {
+        const inp = el(inputId);
+        inp.addEventListener("input", () => { el(labelId).textContent = fmt(inp.value); });
+      }
+
+      async function checkHealth() {
+        const badge = el("health-badge");
+        try {
+          const t0 = performance.now();
+          const res = await fetch("/health");
+          const data = await res.json();
+          const ms = (performance.now() - t0).toFixed(1);
+          badge.textContent = `API OK v${data.version} (${ms} ms)`;
+          badge.className = "badge ok";
+        } catch (err) {
+          badge.textContent = "API Offline";
+          badge.className = "badge err";
+        }
+      }
+
+      function setBanner(kind, message) {
+        const b = el("status-banner");
+        if (!message) {
+          b.className = "status-banner";
+          b.textContent = "";
+          return;
+        }
+        b.className = "status-banner " + kind;
+        b.textContent = message;
+      }
+
+      function clearBlobUrls() {
+        for (const key of Object.keys(state.blobUrls)) {
+          URL.revokeObjectURL(state.blobUrls[key]);
+        }
+        state.blobUrls = {};
+      }
+
+      function setPreviewFile(slot, file) {
+        if (!file) return;
+        const previewEl = el(slot === "query" ? "preview-query" : "preview-target");
+        const metaEl = el(slot === "query" ? "query-meta" : "target-meta");
+        if (slot === "query") {
+          state.queryFile = file;
+          if (!el("catalog-id-input").value.trim()) {
+            el("catalog-id-input").value = file.name || "item.png";
+          }
+        } else {
+          state.targetFile = file;
+        }
+        metaEl.textContent = `${file.name} (${(file.size / 1024).toFixed(1)} KiB)`;
+        const prevSrc = previewEl.dataset.blobUrl;
+        if (prevSrc) URL.revokeObjectURL(prevSrc);
+        const url = URL.createObjectURL(file);
+        previewEl.dataset.blobUrl = url;
+        previewEl.src = url;
+        previewEl.style.display = "inline-block";
+      }
+
+      function wireDropzone(dropId, inputId, slot) {
+        const dz = el(dropId);
+        const inp = el(inputId);
+        dz.addEventListener("click", () => inp.click());
+        inp.addEventListener("change", () => {
+          if (inp.files && inp.files[0]) setPreviewFile(slot, inp.files[0]);
+        });
+        dz.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          dz.classList.add("dragover");
+        });
+        dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+        dz.addEventListener("drop", (e) => {
+          e.preventDefault();
+          dz.classList.remove("dragover");
+          if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+            setPreviewFile(slot, e.dataTransfer.files[0]);
+          }
+        });
+      }
+
+      wireDropzone("drop-query", "file-query", "query");
+      wireDropzone("drop-target", "file-target", "target");
+
+      function updateModeUI() {
+        const isKeypoints = state.mode === "keypoints";
+        const isMatch = state.mode === "match";
+        const isCatalog = state.mode === "catalog";
+
+        el("input-target-wrap").classList.toggle("hidden", !isMatch);
+        el("catalog-controls-wrap").classList.toggle("hidden", !isCatalog);
+
+        el("ctrl-octaves").classList.toggle("hidden", isCatalog);
+        el("ctrl-scales").classList.toggle("hidden", isCatalog);
+        el("ctrl-threshold").classList.toggle("hidden", isCatalog);
+        el("ctrl-descriptors").classList.toggle("hidden", !isKeypoints);
+
+        el("ctrl-ratio").classList.toggle("hidden", isKeypoints);
+        el("ctrl-ransac").classList.toggle("hidden", isKeypoints);
+        el("ctrl-ransac-enabled").classList.toggle("hidden", !isMatch);
+
+        el("visual-results-wrap").classList.toggle("hidden", isCatalog);
+        el("catalog-results-wrap").classList.toggle("hidden", !isCatalog);
+
+        el("pill-keypoints").classList.toggle("hidden", !isKeypoints);
+        el("pill-matches").classList.toggle("hidden", !isMatch);
+        el("pill-stitch").classList.toggle("hidden", !isMatch);
+
+        el("query-label").textContent = isCatalog
+          ? "Drop Catalog / Query Image (or click)"
+          : isMatch
+            ? "Drop Query / First Image (or click)"
+            : "Drop Image (or click to browse)";
+
+        el("target-label").textContent = "Drop Target / Second Image (or click)";
+
+        el("btn-run").textContent = isCatalog
+          ? "Search Catalog with Query Image"
+          : isMatch
+            ? "Match & Align Images"
+            : "Extract & Visualize Keypoints";
+
+        state.view = isMatch ? "matches" : "keypoints";
+        syncViewPills();
+
+        if (isCatalog) {
+          refreshCatalogList();
+        }
+      }
+
+      function syncViewPills() {
+        for (const btn of document.querySelectorAll("#view-pills .pill-btn")) {
+          btn.classList.toggle("active", btn.dataset.view === state.view);
+        }
+        renderStageImage();
+      }
+
+      function renderStageImage() {
+        const stage = el("visual-stage");
+        const dl = el("download-png");
+        const url = state.blobUrls[state.view];
+        stage.textContent = "";
+        if (!url) {
+          dl.classList.add("hidden");
+          const p = document.createElement("div");
+          p.className = "placeholder";
+          p.textContent = state.mode === "match" && state.view === "stitch"
+            ? "Run Match & Align on overlapping images to render the homography-warped panorama."
+            : "Run the pipeline to view rendered SIFT output here.";
+          stage.appendChild(p);
+          return;
+        }
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "Rendered Vision Output";
+        stage.appendChild(img);
+        dl.href = url;
+        dl.download = `native_vision_${state.view}.png`;
+        dl.classList.remove("hidden");
+      }
+
+      for (const btn of document.querySelectorAll(".tab-btn")) {
+        btn.addEventListener("click", () => {
+          for (const b of document.querySelectorAll(".tab-btn")) b.classList.remove("active");
+          btn.classList.add("active");
+          state.mode = btn.dataset.mode;
+          setBanner("", "");
+          updateModeUI();
+        });
+      }
+
+      for (const pill of document.querySelectorAll("#view-pills .pill-btn")) {
+        pill.addEventListener("click", () => {
+          state.view = pill.dataset.view;
+          syncViewPills();
+        });
+      }
+
+      function getParams() {
+        return {
+          octaves: el("param-octaves").value,
+          scales: el("param-scales").value,
+          threshold: Number(el("param-threshold").value).toFixed(3),
+          ratio: Number(el("param-ratio").value).toFixed(2),
+          ransac: Number(el("param-ransac").value).toFixed(1),
+          ransacEnabled: el("param-ransac-enabled").checked ? "true" : "false",
+          descriptors: el("param-descriptors").checked ? "true" : "false",
+        };
+      }
+
+      async function fetchJsonChecked(url, options) {
+        const res = await fetch(url, options);
+        const text = await res.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch (_) {}
+        if (!res.ok) {
+          throw new Error((json && json.error) ? json.error : `HTTP ${res.status}: ${text}`);
+        }
+        return json;
+      }
+
+      async function fetchPngChecked(url, options) {
+        const res = await fetch(url, options);
+        if (!res.ok) {
+          const text = await res.text();
+          let errMsg = `HTTP ${res.status}: ${text}`;
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed && parsed.error) errMsg = parsed.error;
+          } catch (_) {}
+          throw new Error(errMsg);
+        }
+        const blob = await res.blob();
+        return URL.createObjectURL(blob);
+      }
+
+      function renderHomography(matrix) {
+        const box = el("homography-box");
+        const grid = el("homography-grid");
+        grid.textContent = "";
+        if (!matrix) {
+          box.style.display = "none";
+          return;
+        }
+        box.style.display = "block";
+        for (const row of matrix) {
+          for (const val of row) {
+            const cell = document.createElement("div");
+            cell.className = "matrix-cell";
+            cell.textContent = Math.abs(val) < 1e-3 && val !== 0
+              ? val.toExponential(2)
+              : val.toFixed(4);
+            grid.appendChild(cell);
+          }
+        }
+      }
+
+      async function runKeypoints() {
+        if (!state.queryFile) {
+          throw new Error("Please drop or select an image first (or click Load Built-In Synthetic Demo Images).");
+        }
+        const p = getParams();
+        const qs = `octaves=${p.octaves}&scales=${p.scales}&threshold=${p.threshold}`;
+
+        const fdVis = new FormData();
+        fdVis.append("image", state.queryFile);
+        const fdJson = new FormData();
+        fdJson.append("image", state.queryFile);
+
+        const [visUrl, json] = await Promise.all([
+          fetchPngChecked(`/api/v1/visualize-features?${qs}`, { method: "POST", body: fdVis }),
+          fetchJsonChecked(`/api/v1/process-features?${qs}&include_descriptors=${p.descriptors}`, {
+            method: "POST",
+            body: fdJson,
+          }),
+        ]);
+
+        state.blobUrls.keypoints = visUrl;
+        el("m-count").textContent = json.features
+          ? `${json.keypoint_count} kps / ${json.features.length} feats`
+          : `${json.keypoint_count} kps`;
+        el("m-geom").textContent = `${json.width}x${json.height} px`;
+        el("raw-json").textContent = JSON.stringify(json, null, 2);
+        renderHomography(null);
+        state.view = "keypoints";
+        syncViewPills();
+      }
+
+      async function runMatchAndAlign() {
+        if (!state.queryFile || !state.targetFile) {
+          throw new Error("Please select both a Query and a Target image (or click Load Built-In Synthetic Demo Images).");
+        }
+        const p = getParams();
+        const qs = `octaves=${p.octaves}&scales=${p.scales}&threshold=${p.threshold}&ratio=${p.ratio}&ransac=${p.ransacEnabled}&ransac_threshold=${p.ransac}`;
+
+        const makePairFd = () => {
+          const fd = new FormData();
+          fd.append("query", state.queryFile);
+          fd.append("target", state.targetFile);
+          return fd;
+        };
+
+        const [matchJson, matchesPngUrl] = await Promise.all([
+          fetchJsonChecked(`/api/v1/match-features?${qs}`, { method: "POST", body: makePairFd() }),
+          fetchPngChecked(`/api/v1/align-images?${qs}&mode=matches`, { method: "POST", body: makePairFd() }),
+        ]);
+
+        state.blobUrls.matches = matchesPngUrl;
+
+        // Stitch panorama in best-effort mode so matches still display if homography fails on non-overlapping images
+        try {
+          state.blobUrls.stitch = await fetchPngChecked(`/api/v1/align-images?${qs}&mode=stitch`, {
+            method: "POST",
+            body: makePairFd(),
+          });
+        } catch (stitchErr) {
+          setBanner("info", `Matches computed, but warped stitch unavailable: ${stitchErr.message}`);
+        }
+
+        const tr = matchJson.tracking;
+        el("m-count").textContent = `${tr.match_count} / ${tr.raw_match_count} (${(tr.inlier_ratio * 100).toFixed(1)}%)`;
+        const tf = matchJson.transform;
+        el("m-geom").textContent = tf
+          ? `dx=${tf.tx.toFixed(1)}, dy=${tf.ty.toFixed(1)}, s=${tf.scale.toFixed(2)}, ${tf.rotation_deg.toFixed(1)}deg`
+          : `dx=${tr.median_displacement[0].toFixed(1)}, dy=${tr.median_displacement[1].toFixed(1)}`;
+
+        renderHomography(matchJson.homography ? matchJson.homography.matrix : null);
+        el("raw-json").textContent = JSON.stringify(matchJson, null, 2);
+
+        if (state.view !== "stitch" || !state.blobUrls.stitch) {
+          state.view = "matches";
+        }
+        syncViewPills();
+      }
+
+      async function refreshCatalogList() {
+        const wrap = el("catalog-list-table");
+        try {
+          const data = await fetchJsonChecked("/api/v1/catalog");
+          el("m-count").textContent = `${data.catalog_size} indexed`;
+          el("m-geom").textContent = `O=${data.octaves}, S=${data.scales}`;
+          wrap.textContent = "";
+          if (!data.entries || data.entries.length === 0) {
+            const p = document.createElement("div");
+            p.className = "dropzone-meta";
+            p.textContent = "Catalog is empty. Load or drop an image and click 'Index Image into Live Catalog'.";
+            wrap.appendChild(p);
+            return;
+          }
+          const tbl = document.createElement("table");
+          const thead = document.createElement("thead");
+          thead.innerHTML = "<tr><th>ID</th><th>Dimensions</th><th>SIFT Features</th></tr>";
+          tbl.appendChild(thead);
+          const tbody = document.createElement("tbody");
+          for (const entry of data.entries) {
+            const tr = document.createElement("tr");
+            const tdId = document.createElement("td");
+            tdId.textContent = entry.id;
+            const tdDim = document.createElement("td");
+            tdDim.className = "mono";
+            tdDim.textContent = `${entry.width}x${entry.height}`;
+            const tdCnt = document.createElement("td");
+            tdCnt.className = "mono";
+            tdCnt.textContent = String(entry.feature_count);
+            tr.append(tdId, tdDim, tdCnt);
+            tbody.appendChild(tr);
+          }
+          tbl.appendChild(tbody);
+          wrap.appendChild(tbl);
+        } catch (err) {
+          wrap.textContent = err.message;
+        }
+      }
+
+      async function indexCurrentCatalogItem() {
+        if (!state.queryFile) {
+          setBanner("error", "Drop or select an image first to index it into the catalog.");
+          return;
+        }
+        const id = el("catalog-id-input").value.trim() || state.queryFile.name || "item.png";
+        setBanner("", "");
+        el("m-status").textContent = "Indexing...";
+        try {
+          const t0 = performance.now();
+          const fd = new FormData();
+          fd.append("image", state.queryFile);
+          const json = await fetchJsonChecked(`/api/v1/catalog/index?id=${encodeURIComponent(id)}`, {
+            method: "POST",
+            body: fd,
+          });
+          el("m-status").textContent = "Indexed";
+          el("m-time").textContent = `${(performance.now() - t0).toFixed(1)} ms`;
+          el("raw-json").textContent = JSON.stringify(json, null, 2);
+          setBanner("info", `Indexed "${json.id}" with ${json.feature_count} features (catalog size: ${json.catalog_size}).`);
+          await refreshCatalogList();
+        } catch (err) {
+          el("m-status").textContent = "Error";
+          setBanner("error", err.message);
+        }
+      }
+
+      async function runCatalogSearch() {
+        if (!state.queryFile) {
+          throw new Error("Drop or select a query image first.");
+        }
+        const p = getParams();
+        const fd = new FormData();
+        fd.append("query", state.queryFile);
+        const json = await fetchJsonChecked(
+          `/api/v1/catalog/search?ratio=${p.ratio}&ransac_threshold=${p.ransac}`,
+          { method: "POST", body: fd }
+        );
+        el("raw-json").textContent = JSON.stringify(json, null, 2);
+        el("m-count").textContent = `${json.hits.length} hits (${json.query_feature_count} q-feats)`;
+        el("m-geom").textContent = json.hits.length > 0 ? `Top: ${json.hits[0].id}` : "No match";
+
+        const hitsEl = el("catalog-search-hits");
+        hitsEl.textContent = "";
+        if (!json.hits || json.hits.length === 0) {
+          const pMsg = document.createElement("div");
+          pMsg.className = "dropzone-meta";
+          pMsg.textContent = "No matching indexed items met the geometric RANSAC threshold.";
+          hitsEl.appendChild(pMsg);
+        } else {
+          const tbl = document.createElement("table");
+          const thead = document.createElement("thead");
+          thead.innerHTML = "<tr><th>Rank / ID</th><th>Hamming Votes</th><th>RANSAC Inliers</th><th>Estimated Pose</th></tr>";
+          tbl.appendChild(thead);
+          const tbody = document.createElement("tbody");
+          json.hits.forEach((hit, idx) => {
+            const tr = document.createElement("tr");
+            const tdId = document.createElement("td");
+            tdId.textContent = `#${idx + 1} ${hit.id}`;
+            const tdVotes = document.createElement("td");
+            tdVotes.className = "mono";
+            tdVotes.textContent = String(hit.coarse_votes);
+            const tdInl = document.createElement("td");
+            tdInl.className = "mono";
+            tdInl.textContent = `${hit.tracking.match_count} / ${hit.tracking.raw_match_count}`;
+            const tdPose = document.createElement("td");
+            tdPose.className = "mono";
+            tdPose.textContent = hit.transform
+              ? `tx=${hit.transform.tx.toFixed(1)}, ty=${hit.transform.ty.toFixed(1)}, rot=${hit.transform.rotation_deg.toFixed(1)}deg`
+              : `dx=${hit.tracking.median_displacement[0].toFixed(1)}, dy=${hit.tracking.median_displacement[1].toFixed(1)}`;
+            tr.append(tdId, tdVotes, tdInl, tdPose);
+            tbody.appendChild(tr);
+          });
+          tbl.appendChild(tbody);
+          hitsEl.appendChild(tbl);
+        }
+        await refreshCatalogList();
+      }
+
+      async function executeCurrentMode() {
+        const btn = el("btn-run");
+        btn.disabled = true;
+        setBanner("", "");
+        el("m-status").textContent = "Running...";
+        if (state.mode !== "catalog") clearBlobUrls();
+
+        const t0 = performance.now();
+        try {
+          if (state.mode === "keypoints") {
+            await runKeypoints();
+          } else if (state.mode === "match") {
+            await runMatchAndAlign();
+          } else {
+            await runCatalogSearch();
+          }
+          el("m-status").textContent = "Complete";
+          el("m-time").textContent = `${(performance.now() - t0).toFixed(1)} ms`;
+          return true;
+        } catch (err) {
+          el("m-status").textContent = "Error";
+          setBanner("error", err.message);
+          return false;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      function canvasToPngFile(canvas, name) {
+        return new Promise((resolve) => {
+          canvas.toBlob((blob) => {
+            resolve(new File([blob], name, { type: "image/png" }));
+          }, "image/png");
+        });
+      }
+
+      function drawSyntheticScene(ctx, offsetX, offsetY, angleRad) {
+        ctx.fillStyle = "#111827";
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.save();
+        ctx.translate(ctx.canvas.width / 2 + offsetX, ctx.canvas.height / 2 + offsetY);
+        ctx.rotate(angleRad);
+        ctx.translate(-ctx.canvas.width / 2, -ctx.canvas.height / 2);
+
+        const blocks = [
+          [60, 50, 70, 22, "#f8fafc"],
+          [60, 50, 22, 70, "#e2e8f0"],
+          [165, 62, 48, 48, "#38bdf8"],
+          [182, 78, 16, 16, "#0f172a"],
+          [85, 160, 32, 68, "#fbbf24"],
+          [117, 198, 52, 26, "#f59e0b"],
+          [220, 145, 58, 22, "#34d399"],
+          [256, 167, 22, 54, "#10b981"],
+        ];
+        for (const [x, y, w, h, color] of blocks) {
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y, w, h);
+        }
+        // Subtle texture rings for multi-scale keypoints
+        ctx.strokeStyle = "#cbd5e1";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(230, 80, 20, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      async function loadSyntheticDemo() {
+        const c1 = document.createElement("canvas");
+        c1.width = 340;
+        c1.height = 280;
+        drawSyntheticScene(c1.getContext("2d"), 0, 0, 0);
+
+        const c2 = document.createElement("canvas");
+        c2.width = 340;
+        c2.height = 280;
+        drawSyntheticScene(c2.getContext("2d"), 24, -14, 0.14);
+
+        const [f1, f2] = await Promise.all([
+          canvasToPngFile(c1, "demo_query.png"),
+          canvasToPngFile(c2, "demo_target_rotated.png"),
+        ]);
+
+        setPreviewFile("query", f1);
+        setPreviewFile("target", f2);
+        el("catalog-id-input").value = "demo_scene";
+        setBanner("info", "Loaded built-in synthetic demo pair (340x280 query & rotated/shifted target).");
+      }
+
+      function setSliderValue(inputId, labelId, value, fmt) {
+        const inp = el(inputId);
+        inp.value = String(value);
+        el(labelId).textContent = fmt(value);
+      }
+
+      function applyParams(opts) {
+        if (opts.octaves != null) setSliderValue("param-octaves", "val-octaves", opts.octaves, (v) => String(parseInt(v, 10)));
+        if (opts.scales != null) setSliderValue("param-scales", "val-scales", opts.scales, (v) => String(parseInt(v, 10)));
+        if (opts.threshold != null) setSliderValue("param-threshold", "val-threshold", opts.threshold, (v) => Number(v).toFixed(3));
+        if (opts.ratio != null) setSliderValue("param-ratio", "val-ratio", opts.ratio, (v) => Number(v).toFixed(2));
+        if (opts.ransac != null) setSliderValue("param-ransac", "val-ransac", opts.ransac, (v) => Number(v).toFixed(1));
+        if (opts.ransacEnabled != null) el("param-ransac-enabled").checked = Boolean(opts.ransacEnabled);
+      }
+
+      function switchTab(mode, preferredView) {
+        state.mode = mode;
+        for (const b of document.querySelectorAll(".tab-btn")) {
+          b.classList.toggle("active", b.dataset.mode === mode);
+        }
+        updateModeUI();
+        if (preferredView) {
+          state.view = preferredView;
+          syncViewPills();
+        }
+      }
+
+      function drawMedicalScan(ctx, shiftX, shiftY, rotRad, exposureGain) {
+        const w = ctx.canvas.width;
+        const h = ctx.canvas.height;
+        ctx.fillStyle = "#080e16";
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.save();
+        ctx.translate(w / 2 + shiftX, h / 2 + shiftY);
+        ctx.rotate(rotRad);
+        ctx.translate(-w / 2, -h / 2);
+
+        const g = (v) => Math.max(0, Math.min(255, Math.round(v * exposureGain)));
+        // Optic disc / tissue landmark cluster
+        ctx.strokeStyle = `rgb(${g(210)}, ${g(225)}, ${g(240)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(130, 145, 28, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Branching vascular structures (rich multi-scale corners & bifurcations)
+        const vessels = [
+          [[130, 145], [185, 110], [240, 82], [295, 65]],
+          [[185, 110], [220, 140], [275, 165], [320, 195]],
+          [[130, 145], [88, 95], [58, 60]],
+          [[130, 145], [95, 200], [65, 248]],
+          [[160, 165], [205, 215], [255, 240]],
+        ];
+        ctx.lineCap = "round";
+        for (const pts of vessels) {
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = `rgb(${g(195)}, ${g(215)}, ${g(230)})`;
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+          ctx.stroke();
+        }
+
+        // High-contrast cellular nuclei & calibration fiducials
+        const cells = [
+          [75, 140, 9], [105, 72, 7], [215, 68, 10], [260, 118, 8],
+          [190, 185, 11], [292, 225, 9], [135, 240, 8], [248, 202, 7],
+        ];
+        for (const [cx, cy, r] of cells) {
+          ctx.fillStyle = `rgb(${g(235)}, ${g(245)}, ${g(255)})`;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = `rgb(${g(25)}, ${g(35)}, ${g(50)})`;
+          ctx.fillRect(cx - 3, cy - 3, 6, 6);
+        }
+        ctx.restore();
+      }
+
+      function drawTrackedObjectFrame(ctx, objX, objY, objAngle, distractorSeed) {
+        const w = ctx.canvas.width;
+        const h = ctx.canvas.height;
+        ctx.fillStyle = "#0f172a";
+        ctx.fillRect(0, 0, w, h);
+
+        // Moving background clutter / outliers that RANSAC must reject
+        for (let i = 0; i < 18; i++) {
+          const bx = ((i * 67 + distractorSeed * 43) % (w - 30)) + 10;
+          const by = ((i * 53 + distractorSeed * 29) % (h - 30)) + 10;
+          ctx.fillStyle = i % 2 === 0 ? "#334155" : "#475569";
+          ctx.fillRect(bx, by, 12 + (i % 4) * 4, 8 + (i % 3) * 3);
+        }
+
+        // Rigid textured target object (fiducial marker + asymmetric pattern)
+        ctx.save();
+        ctx.translate(objX, objY);
+        ctx.rotate(objAngle);
+        ctx.fillStyle = "#e2e8f0";
+        ctx.fillRect(-52, -42, 104, 84);
+        ctx.fillStyle = "#0284c7";
+        ctx.fillRect(-44, -34, 88, 68);
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillRect(-34, -24, 24, 24);
+        ctx.fillRect(10, -24, 24, 14);
+        ctx.fillRect(-34, 8, 40, 18);
+        ctx.fillStyle = "#0f172a";
+        ctx.fillRect(-26, -16, 10, 10);
+        ctx.beginPath();
+        ctx.arc(22, 12, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawWideMosaicTile(ctx, cameraX, cameraY, scale) {
+        const w = ctx.canvas.width;
+        const h = ctx.canvas.height;
+        ctx.fillStyle = "#111827";
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.save();
+        ctx.scale(scale, scale);
+        ctx.translate(-cameraX, -cameraY);
+
+        // Large 600x300 aerial/map world rendered into overlapping left/right camera tiles
+        ctx.strokeStyle = "#1e293b";
+        ctx.lineWidth = 2;
+        for (let gx = 20; gx < 600; gx += 40) {
+          ctx.beginPath();
+          ctx.moveTo(gx, 0);
+          ctx.lineTo(gx, 320);
+          ctx.stroke();
+        }
+        const landmarks = [
+          [40, 45, 70, 36, "#64748b"],
+          [55, 115, 50, 85, "#475569"],
+          [165, 50, 62, 24, "#f8fafc"],
+          [165, 50, 24, 62, "#cbd5e1"],
+          [215, 130, 56, 56, "#38bdf8"],
+          [232, 146, 22, 22, "#0f172a"],
+          [290, 48, 48, 34, "#fbbf24"],
+          [310, 82, 20, 52, "#f59e0b"],
+          [265, 198, 72, 24, "#34d399"],
+          [410, 60, 68, 44, "#a78bfa"],
+          [440, 140, 75, 55, "#f472b6"],
+          [510, 75, 42, 42, "#f8fafc"],
+        ];
+        for (const [x, y, rw, rh, c] of landmarks) {
+          ctx.fillStyle = c;
+          ctx.fillRect(x, y, rw, rh);
+        }
+        ctx.strokeStyle = "#e2e8f0";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(340, 175, 22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawCatalogTemplate(ctx, kind, angleRad, scale) {
+        const w = ctx.canvas.width;
+        const h = ctx.canvas.height;
+        ctx.fillStyle = "#0f172a";
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.save();
+        ctx.translate(w / 2, h / 2);
+        ctx.rotate(angleRad);
+        ctx.scale(scale, scale);
+        ctx.translate(-w / 2, -h / 2);
+
+        if (kind === "sensor_board") {
+          ctx.fillStyle = "#065f46";
+          ctx.fillRect(55, 45, 190, 150);
+          ctx.fillStyle = "#d1fae5";
+          for (let i = 0; i < 6; i++) {
+            ctx.fillRect(70 + i * 28, 55, 12, 22);
+            ctx.fillRect(70 + i * 28, 162, 12, 22);
+          }
+          ctx.fillStyle = "#0f172a";
+          ctx.fillRect(105, 88, 90, 64);
+          ctx.fillStyle = "#fbbf24";
+          ctx.fillRect(120, 102, 20, 20);
+        } else if (kind === "medical_chip") {
+          drawMedicalScan(ctx, 0, 0, 0, 1.0);
+        } else {
+          ctx.fillStyle = "#1e3a8a";
+          ctx.fillRect(60, 40, 180, 160);
+          ctx.fillStyle = "#f8fafc";
+          ctx.fillRect(85, 65, 130, 24);
+          ctx.fillRect(85, 65, 24, 110);
+          ctx.fillStyle = "#f43f5e";
+          ctx.beginPath();
+          ctx.arc(175, 145, 30, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      async function runPreset(preset) {
+        const buttons = document.querySelectorAll(".preset-btn");
+        buttons.forEach((b) => {
+          b.disabled = true;
+          b.classList.toggle("active", b.dataset.preset === preset);
+        });
+
+        try {
+          if (preset === "medical") {
+            el("showcase-caption").textContent =
+              "Medical Scan Registration: sub-pixel shift + 4.2 deg rotation + 18% exposure change (illumination invariance + warped stitch).";
+            const c1 = document.createElement("canvas");
+            c1.width = 360; c1.height = 300;
+            drawMedicalScan(c1.getContext("2d"), 0, 0, 0, 1.0);
+
+            const c2 = document.createElement("canvas");
+            c2.width = 360; c2.height = 300;
+            drawMedicalScan(c2.getContext("2d"), 14.35, -8.65, 0.073, 0.82);
+
+            const [f1, f2] = await Promise.all([
+              canvasToPngFile(c1, "medical_baseline.png"),
+              canvasToPngFile(c2, "medical_followup_low_exposure.png"),
+            ]);
+            setPreviewFile("query", f1);
+            setPreviewFile("target", f2);
+            applyParams({ octaves: 3, scales: 3, threshold: 0.015, ratio: 0.75, ransac: 2.5, ransacEnabled: true });
+            switchTab("match", "stitch");
+            if (await executeCurrentMode()) {
+              setBanner("info", "Medical Registration Preset: aligned shifted/rotated follow-up scan across exposure variation.");
+            }
+          } else if (preset === "tracking") {
+            el("showcase-caption").textContent =
+              "Rigid Object Tracking: target moves +54/+26 px with +11 deg tilt while RANSAC rejects shifting background clutter.";
+            const c1 = document.createElement("canvas");
+            c1.width = 360; c1.height = 280;
+            drawTrackedObjectFrame(c1.getContext("2d"), 125, 115, 0.0, 1);
+
+            const c2 = document.createElement("canvas");
+            c2.width = 360; c2.height = 280;
+            drawTrackedObjectFrame(c2.getContext("2d"), 179, 141, 0.19, 4);
+
+            const [f1, f2] = await Promise.all([
+              canvasToPngFile(c1, "tracking_frame_t0.png"),
+              canvasToPngFile(c2, "tracking_frame_t1.png"),
+            ]);
+            setPreviewFile("query", f1);
+            setPreviewFile("target", f2);
+            applyParams({ octaves: 3, scales: 3, threshold: 0.02, ratio: 0.75, ransac: 3.0, ransacEnabled: true });
+            switchTab("match", "matches");
+            if (await executeCurrentMode()) {
+              setBanner("info", "Rigid Object Tracking Preset: isolated target pose amidst moving background distractors.");
+            }
+          } else if (preset === "stitch") {
+            el("showcase-caption").textContent =
+              "Aerial / Map Mosaic Stitch: overlapping left/right camera views with 1.04x scale difference merged via 3x3 Homography.";
+            const c1 = document.createElement("canvas");
+            c1.width = 340; c1.height = 260;
+            drawWideMosaicTile(c1.getContext("2d"), 15, 10, 1.0);
+
+            const c2 = document.createElement("canvas");
+            c2.width = 340; c2.height = 260;
+            drawWideMosaicTile(c2.getContext("2d"), 150, 16, 1.04);
+
+            const [f1, f2] = await Promise.all([
+              canvasToPngFile(c1, "mosaic_left_tile.png"),
+              canvasToPngFile(c2, "mosaic_right_tile.png"),
+            ]);
+            setPreviewFile("query", f1);
+            setPreviewFile("target", f2);
+            applyParams({ octaves: 3, scales: 3, threshold: 0.02, ratio: 0.75, ransac: 3.0, ransacEnabled: true });
+            switchTab("match", "stitch");
+            if (await executeCurrentMode()) {
+              setBanner("info", "Aerial Mosaic Preset: warped and feather-blended left/right tiles via RANSAC Homography.");
+            }
+          } else if (preset === "catalog") {
+            el("showcase-caption").textContent =
+              "Visual Catalog Lookup: indexes 3 synthetic items into /api/v1/catalog, then matches a rotated/scaled query via 128-bit Hamming + RANSAC.";
+            applyParams({ ratio: 0.75, ransac: 4.0 });
+            switchTab("catalog");
+
+            const templates = [
+              ["sku_sensor_board", "sensor_board"],
+              ["sku_medical_chip", "medical_chip"],
+              ["sku_emblem_tag", "emblem_tag"],
+            ];
+            for (const [id, kind] of templates) {
+              const tc = document.createElement("canvas");
+              tc.width = 300; tc.height = 240;
+              drawCatalogTemplate(tc.getContext("2d"), kind, 0, 1.0);
+              const file = await canvasToPngFile(tc, `${id}.png`);
+              const fd = new FormData();
+              fd.append("image", file);
+              await fetchJsonChecked(`/api/v1/catalog/index?id=${encodeURIComponent(id)}`, {
+                method: "POST",
+                body: fd,
+              });
+            }
+
+            const qc = document.createElement("canvas");
+            qc.width = 300; qc.height = 240;
+            drawCatalogTemplate(qc.getContext("2d"), "medical_chip", 0.22, 0.92);
+            const qFile = await canvasToPngFile(qc, "query_rotated_medical_chip.png");
+            setPreviewFile("query", qFile);
+            el("catalog-id-input").value = "sku_medical_chip_v2";
+            if (await executeCurrentMode()) {
+              setBanner("info", "Visual Catalog Preset: indexed 3 assets and queried with a rotated (+12.6 deg) & scaled (0.92x) probe.");
+            }
+          }
+        } catch (err) {
+          setBanner("error", `Preset error: ${err.message}`);
+        } finally {
+          buttons.forEach((b) => { b.disabled = false; });
+        }
+      }
+
+      for (const pBtn of document.querySelectorAll(".preset-btn")) {
+        pBtn.addEventListener("click", () => runPreset(pBtn.dataset.preset));
+      }
+
+      el("btn-run").addEventListener("click", executeCurrentMode);
+      el("btn-demo").addEventListener("click", loadSyntheticDemo);
+      el("btn-catalog-index").addEventListener("click", indexCurrentCatalogItem);
+
+      document.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+          executeCurrentMode();
+        }
+      });
+
+      checkHealth();
+      updateModeUI();
+    })();
+  </script>
+</body>
+</html>

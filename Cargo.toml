@@ -1,0 +1,40 @@
+[package]
+name = "pure-sift"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Pure-Rust US6711293B1 SIFT feature extraction, RANSAC/Homography alignment, visual catalog search, and HTTP workbench with zero unsafe code."
+repository = "https://github.com/dannkkie/pure-sift"
+homepage = "https://github.com/dannkkie/pure-sift"
+readme = "README.md"
+keywords = ["sift", "computer-vision", "ransac", "homography", "image-matching"]
+categories = ["computer-vision", "multimedia::images", "science"]
+exclude = [
+  "docs/**",
+  "showcase_images/**",
+  "real_camera_benchmarks/**",
+  "*.png",
+  "*.jpg",
+]
+
+[features]
+default = ["server"]
+server = ["dep:axum", "dep:tokio"]
+
+[dependencies]
+# Fast, multi-dimensional array operations (Rust's numpy)
+ndarray = "0.16.0"
+# Image decoding and manipulation library
+image = "0.25.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rayon = "1.10"
+# Optional HTTP API & embedded Web UI server dependencies
+axum = { version = "0.7.0", features = ["multipart"], optional = true }
+tokio = { version = "1.0", features = ["full"], optional = true }
+
+[profile.dev]
+opt-level = 2
+
+[profile.test]
+opt-level = 2
