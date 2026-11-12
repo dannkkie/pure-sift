@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pure-sift — In-Browser WebAssembly SIFT &amp; RANSAC Demo</title>
+  <style>
+    :root {
+      --bg: #0b101b;
+      --surface: #121a2b;
+      --surface-2: #182238;
+      --border: #26344f;
+      --text: #e6edf7;
+      --muted: #93a4c3;
+      --accent: #38bdf8;
+      --accent-2: #818cf8;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --err: #f87171;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: radial-gradient(circle at top right, #17233d 0%, var(--bg) 52%);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.45;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 20px 24px 48px;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .title-group h1 {
+      margin: 0;
+      font-size: 1.55rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .badge.ok {
+      color: var(--ok);
+      border-color: rgba(52, 211, 153, 0.35);
+      background: rgba(52, 211, 153, 0.08);
+    }
+    .toolbar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      padding: 8px 14px;
+      border-radius: 10px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s, transform 0.08s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover:not(:disabled) {
+      border-color: var(--accent);
+    }
+    .btn:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .btn.active {
+      background: rgba(56, 189, 248, 0.16);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .btn.primary {
+      background: linear-gradient(135deg, #0284c7, #4f46e5);
+      border-color: transparent;
+      color: #ffffff;
+    }
+    .btn.primary:hover:not(:disabled) {
+      filter: brightness(1.08);
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      min-height: 200px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: rgba(11, 16, 27, 0.45);
+      position: relative;
+      overflow: hidden;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.06);
+    }
+    .dropzone img.preview {
+      max-width: 100%;
+      max-height: 220px;
+      border-radius: 8px;
+      object-fit: contain;
+    }
+    .dropzone .hint {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .params-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .param-field label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+      font-family: var(--mono);
+    }
+    .param-field input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .metric {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .metric .label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    .metric .value {
+      font-family: var(--mono);
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-top: 2px;
+      color: var(--text);
+    }
+    .metric .value.ok { color: var(--ok); }
+    .output-img {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #070a12;
+      display: block;
+    }
+    .status-bar {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      padding: 10px 14px;
+      border-radius: 10px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--muted);
+      display: none;
+    }
+    .status-bar.visible { display: block; }
+    .status-bar.err {
+      border-color: rgba(248, 113, 113, 0.45);
+      background: rgba(248, 113, 113, 0.08);
+      color: var(--err);
+    }
+    .status-bar.ok {
+      border-color: rgba(52, 211, 153, 0.35);
+      background: rgba(52, 211, 153, 0.08);
+      color: var(--ok);
+    }
+    .hidden { display: none !important; }
+    footer {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.82rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="title-group">
+        <h1>
+          <span>pure-sift</span>
+          <span class="badge ok">WASM · Client-Side</span>
+        </h1>
+        <p class="subtitle">
+          100% pure-Rust SIFT feature extraction, RANSAC homography &amp; image stitcher running directly in your browser.
+        </p>
+      </div>
+      <div class="badges">
+        <span class="badge">#![forbid(unsafe_code)]</span>
+        <a class="btn" href="https://github.com/dannkkie/pure-sift" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn" href="https://crates.io/crates/pure-sift" target="_blank" rel="noopener">crates.io</a>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <div class="tabs">
+        <button class="btn active" id="tab-match" type="button">Match &amp; Stitch (2 Images)</button>
+        <button class="btn" id="tab-extract" type="button">Keypoint Inspector (1 Image)</button>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+        <button class="btn" id="btn-load-sample" type="button">Load Aerial Drone Sample</button>
+        <button class="btn primary" id="btn-run" type="button">Run WASM Pipeline</button>
+      </div>
+    </div>
+
+    <div id="status-bar" class="status-bar"></div>
+
+    <!-- MATCH & STITCH PANEL -->
+    <section id="panel-match">
+      <div class="grid-2">
+        <div class="card">
+          <h2>
+            <span>Image A (Query)</span>
+            <span id="meta-a" class="badge">No image</span>
+          </h2>
+          <div class="dropzone" id="drop-a">
+            <input type="file" id="file-a" accept="image/png,image/jpeg,image/webp" class="hidden" />
+            <div class="hint">Drag &amp; drop PNG/JPEG here, or click to select</div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>
+            <span>Image B (Target)</span>
+            <span id="meta-b" class="badge">No image</span>
+          </h2>
+          <div class="dropzone" id="drop-b">
+            <input type="file" id="file-b" accept="image/png,image/jpeg,image/webp" class="hidden" />
+            <div class="hint">Drag &amp; drop PNG/JPEG here, or click to select</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 16px;">
+        <h2>SIFT &amp; RANSAC Parameters</h2>
+        <div class="params-grid">
+          <div class="param-field">
+            <label><span>Octaves</span><span id="val-octaves">4</span></label>
+            <input type="range" id="param-octaves" min="1" max="6" step="1" value="4" />
+          </div>
+          <div class="param-field">
+            <label><span>Scales / Octave</span><span id="val-scales">3</span></label>
+            <input type="range" id="param-scales" min="1" max="5" step="1" value="3" />
+          </div>
+          <div class="param-field">
+            <label><span>Contrast Thresh</span><span id="val-contrast">0.03</span></label>
+            <input type="range" id="param-contrast" min="0.005" max="0.10" step="0.005" value="0.03" />
+          </div>
+          <div class="param-field">
+            <label><span>Lowe Ratio</span><span id="val-ratio">0.75</span></label>
+            <input type="range" id="param-ratio" min="0.40" max="0.95" step="0.05" value="0.75" />
+          </div>
+          <div class="param-field">
+            <label><span>RANSAC px</span><span id="val-ransac">4.0</span></label>
+            <input type="range" id="param-ransac" min="1.0" max="15.0" step="0.5" value="4.0" />
+          </div>
+        </div>
+      </div>
+
+      <div id="match-results" class="hidden">
+        <div class="metrics">
+          <div class="metric"><div class="label">Query Keypoints</div><div class="value" id="m-q-kpts">-</div></div>
+          <div class="metric"><div class="label">Target Keypoints</div><div class="value" id="m-t-kpts">-</div></div>
+          <div class="metric"><div class="label">Lowe Raw Matches</div><div class="value" id="m-raw">-</div></div>
+          <div class="metric"><div class="label">RANSAC Inliers</div><div class="value ok" id="m-inliers">-</div></div>
+          <div class="metric"><div class="label">WASM Time</div><div class="value" id="m-time">-</div></div>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h2>
+            <span>Geometric RANSAC Inlier Correspondences</span>
+            <a id="dl-matches" class="btn" download="pure_sift_matches.png">Download PNG</a>
+          </h2>
+          <img id="img-matches" class="output-img" alt="RANSAC matches visualization" />
+        </div>
+
+        <div class="card">
+          <h2>
+            <span>Homography Warped &amp; Feather-Blended Panorama</span>
+            <a id="dl-stitch" class="btn hidden" download="pure_sift_stitch.png">Download PNG</a>
+          </h2>
+          <p id="stitch-msg" class="hint hidden" style="color: var(--warn); margin: 0 0 8px;"></p>
+          <img id="img-stitch" class="output-img hidden" alt="Stitched panorama" />
+        </div>
+      </div>
+    </section>
+
+    <!-- KEYPOINT INSPECTOR PANEL -->
+    <section id="panel-extract" class="hidden">
+      <div class="card" style="margin-bottom: 16px;">
+        <h2>
+          <span>Input Image</span>
+          <span id="meta-single" class="badge">No image</span>
+        </h2>
+        <div class="dropzone" id="drop-single">
+          <input type="file" id="file-single" accept="image/png,image/jpeg,image/webp" class="hidden" />
+          <div class="hint">Drag &amp; drop PNG/JPEG here, or click to select</div>
+        </div>
+      </div>
+
+      <div id="extract-results" class="hidden">
+        <div class="metrics">
+          <div class="metric"><div class="label">Detected Keypoints</div><div class="value ok" id="e-kpts">-</div></div>
+          <div class="metric"><div class="label">Dimensions</div><div class="value" id="e-dims">-</div></div>
+          <div class="metric"><div class="label">WASM Time</div><div class="value" id="e-time">-</div></div>
+        </div>
+        <div class="card">
+          <h2>
+            <span>Detected SIFT Scale Circles &amp; Orientation Vectors</span>
+            <a id="dl-extract" class="btn" download="pure_sift_keypoints.png">Download PNG</a>
+          </h2>
+          <img id="img-extract" class="output-img" alt="SIFT keypoints overlay" />
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <span>Powered by <strong>pure-sift</strong> (<code>--no-default-features</code>) compiled to <code>wasm32-unknown-unknown</code>.</span>
+      <span>Zero server uploads — all pixels stay on your device.</span>
+    </footer>
+  </div>
+
+  <script type="module">
+    const worker = new Worker("./worker.js", { type: "module" });
+    let nextId = 1;
+    const pending = new Map();
+
+    worker.onmessage = (event) => {
+      const { id, ok, result, error } = event.data;
+      const entry = pending.get(id);
+      if (!entry) return;
+      pending.delete(id);
+      if (ok) entry.resolve(result);
+      else entry.reject(new Error(error));
+    };
+
+    function callWorker(action, payload, transfer = []) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, action, payload }, transfer);
+      });
+    }
+
+    let mode = "match";
+    let bytesA = null;
+    let bytesB = null;
+    let bytesSingle = null;
+    const objectUrls = [];
+
+    function makeBlobUrl(buffer) {
+      const blob = new Blob([buffer], { type: "image/png" });
+      const url = URL.createObjectURL(blob);
+      objectUrls.push(url);
+      return url;
+    }
+
+    function setStatus(msg, kind = "") {
+      const bar = document.getElementById("status-bar");
+      bar.textContent = msg;
+      bar.className = "status-bar visible" + (kind ? ` ${kind}` : "");
+    }
+
+    function clearStatus() {
+      document.getElementById("status-bar").className = "status-bar";
+    }
+
+    function bindRange(id, labelId) {
+      const el = document.getElementById(id);
+      const lbl = document.getElementById(labelId);
+      el.addEventListener("input", () => { lbl.textContent = el.value; });
+    }
+    bindRange("param-octaves", "val-octaves");
+    bindRange("param-scales", "val-scales");
+    bindRange("param-contrast", "val-contrast");
+    bindRange("param-ratio", "val-ratio");
+    bindRange("param-ransac", "val-ransac");
+
+    function setupDropzone(dropId, inputId, metaId, onBytes) {
+      const drop = document.getElementById(dropId);
+      const input = document.getElementById(inputId);
+      const meta = document.getElementById(metaId);
+
+      function handleFile(file) {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const buf = reader.result;
+          onBytes(new Uint8Array(buf), file.name, buf.byteLength);
+          meta.textContent = `${file.name} (${Math.round(buf.byteLength / 1024)} KB)`;
+          const previewUrl = URL.createObjectURL(file);
+          objectUrls.push(previewUrl);
+          drop.innerHTML = "";
+          const img = document.createElement("img");
+          img.src = previewUrl;
+          img.className = "preview";
+          drop.appendChild(img);
+        };
+        reader.readAsArrayBuffer(file);
+      }
+
+      drop.addEventListener("click", () => input.click());
+      input.addEventListener("change", () => handleFile(input.files[0]));
+      drop.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        drop.classList.add("dragover");
+      });
+      drop.addEventListener("dragleave", () => drop.classList.remove("dragover"));
+      drop.addEventListener("drop", (e) => {
+        e.preventDefault();
+        drop.classList.remove("dragover");
+        if (e.dataTransfer.files.length > 0) {
+          handleFile(e.dataTransfer.files[0]);
+        }
+      });
+    }
+
+    function setDropPreview(dropId, metaId, bytes, name) {
+      const drop = document.getElementById(dropId);
+      const meta = document.getElementById(metaId);
+      meta.textContent = `${name} (${Math.round(bytes.byteLength / 1024)} KB)`;
+      const url = URL.createObjectURL(new Blob([bytes]));
+      objectUrls.push(url);
+      drop.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = url;
+      img.className = "preview";
+      drop.appendChild(img);
+    }
+
+    setupDropzone("drop-a", "file-a", "meta-a", (b) => { bytesA = b; });
+    setupDropzone("drop-b", "file-b", "meta-b", (b) => { bytesB = b; });
+    setupDropzone("drop-single", "file-single", "meta-single", (b) => { bytesSingle = b; });
+
+    document.getElementById("tab-match").addEventListener("click", () => {
+      mode = "match";
+      document.getElementById("tab-match").classList.add("active");
+      document.getElementById("tab-extract").classList.remove("active");
+      document.getElementById("panel-match").classList.remove("hidden");
+      document.getElementById("panel-extract").classList.add("hidden");
+      clearStatus();
+    });
+
+    document.getElementById("tab-extract").addEventListener("click", () => {
+      mode = "extract";
+      document.getElementById("tab-extract").classList.add("active");
+      document.getElementById("tab-match").classList.remove("active");
+      document.getElementById("panel-extract").classList.remove("hidden");
+      document.getElementById("panel-match").classList.add("hidden");
+      clearStatus();
+    });
+
+    async function runPipeline() {
+      const btnRun = document.getElementById("btn-run");
+      const octaves = parseInt(document.getElementById("param-octaves").value, 10);
+      const scales = parseInt(document.getElementById("param-scales").value, 10);
+      const threshold = parseFloat(document.getElementById("param-contrast").value);
+      const ratio = parseFloat(document.getElementById("param-ratio").value);
+      const ransacThreshold = parseFloat(document.getElementById("param-ransac").value);
+
+      btnRun.disabled = true;
+      try {
+        if (mode === "match") {
+          if (!bytesA || !bytesB) {
+            setStatus("Please select or drop both Image A and Image B first (or click 'Load Aerial Drone Sample').", "err");
+            return;
+          }
+          setStatus("Running SIFT + RANSAC + Homography stitching in WebAssembly...");
+          const copyA = bytesA.slice().buffer;
+          const copyB = bytesB.slice().buffer;
+          const res = await callWorker(
+            "match_and_stitch",
+            { queryBytes: copyA, targetBytes: copyB, octaves, scales, threshold, ratio, ransacThreshold },
+            [copyA, copyB]
+          );
+
+          document.getElementById("m-q-kpts").textContent = res.queryFeatures.toLocaleString();
+          document.getElementById("m-t-kpts").textContent = res.targetFeatures.toLocaleString();
+          document.getElementById("m-raw").textContent = res.rawMatches.toLocaleString();
+          document.getElementById("m-inliers").textContent = `${res.inliers.toLocaleString()} (H:${res.homInliers} / S:${res.simInliers})`;
+          document.getElementById("m-time").textContent = `${res.elapsedMs} ms`;
+
+          const matchesUrl = makeBlobUrl(res.matchesPngBuffer);
+          document.getElementById("img-matches").src = matchesUrl;
+          document.getElementById("dl-matches").href = matchesUrl;
+
+          const stitchImg = document.getElementById("img-stitch");
+          const stitchMsg = document.getElementById("stitch-msg");
+          const dlStitch = document.getElementById("dl-stitch");
+
+          if (res.stitchPngBuffer) {
+            const stitchUrl = makeBlobUrl(res.stitchPngBuffer);
+            stitchImg.src = stitchUrl;
+            stitchImg.classList.remove("hidden");
+            dlStitch.href = stitchUrl;
+            dlStitch.classList.remove("hidden");
+            stitchMsg.classList.add("hidden");
+          } else {
+            stitchImg.classList.add("hidden");
+            dlStitch.classList.add("hidden");
+            stitchMsg.textContent = res.stitchError || "Alignment transform could not be estimated.";
+            stitchMsg.classList.remove("hidden");
+          }
+
+          document.getElementById("match-results").classList.remove("hidden");
+          setStatus(`Completed in ${res.elapsedMs} ms — ${res.inliers} geometric RANSAC inliers verified.`, "ok");
+        } else {
+          if (!bytesSingle) {
+            setStatus("Please select or drop an image first.", "err");
+            return;
+          }
+          setStatus("Extracting SIFT keypoints in WebAssembly...");
+          const copy = bytesSingle.slice().buffer;
+          const res = await callWorker(
+            "extract",
+            { bytes: copy, octaves, scales, threshold },
+            [copy]
+          );
+
+          document.getElementById("e-kpts").textContent = res.keypointCount.toLocaleString();
+          document.getElementById("e-dims").textContent = `${res.width}×${res.height}`;
+          document.getElementById("e-time").textContent = `${res.elapsedMs} ms`;
+
+          const url = makeBlobUrl(res.pngBuffer);
+          document.getElementById("img-extract").src = url;
+          document.getElementById("dl-extract").href = url;
+          document.getElementById("extract-results").classList.remove("hidden");
+          setStatus(`Extracted ${res.keypointCount} SIFT keypoints in ${res.elapsedMs} ms.`, "ok");
+        }
+      } catch (err) {
+        setStatus(`Error: ${err.message}`, "err");
+      } finally {
+        btnRun.disabled = false;
+      }
+    }
+
+    document.getElementById("btn-run").addEventListener("click", runPipeline);
+
+    document.getElementById("btn-load-sample").addEventListener("click", async () => {
+      setStatus("Loading aerial drone sample tiles...");
+      try {
+        const [respA, respB] = await Promise.all([
+          fetch("./samples/aerial_west.jpg"),
+          fetch("./samples/aerial_east.jpg"),
+        ]);
+        if (!respA.ok || !respB.ok) throw new Error("Failed to fetch sample images");
+        const [bufA, bufB] = await Promise.all([respA.arrayBuffer(), respB.arrayBuffer()]);
+        bytesA = new Uint8Array(bufA);
+        bytesB = new Uint8Array(bufB);
+        bytesSingle = bytesA;
+        setDropPreview("drop-a", "meta-a", bytesA, "aerial_west.jpg");
+        setDropPreview("drop-b", "meta-b", bytesB, "aerial_east.jpg");
+        setDropPreview("drop-single", "meta-single", bytesSingle, "aerial_west.jpg");
+        await runPipeline();
+      } catch (err) {
+        setStatus(`Sample load failed: ${err.message}`, "err");
+      }
+    });
+  </script>
+</body>
+</html>
