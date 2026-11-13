@@ -36,6 +36,11 @@ tokio = { version = "1.0", features = ["full"], optional = true }
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = "0.5"
+
+[[bench]]
+name = "sift_pipeline"
+harness = false
 
 [profile.dev]
 opt-level = 2
