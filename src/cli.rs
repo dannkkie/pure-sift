@@ -1427,10 +1427,10 @@ fn is_supported_image_ext(path: &std::path::Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
     };
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "tif" | "tiff" | "bmp"
-    )
+    let lower = ext.to_ascii_lowercase();
+    let is_extra = cfg!(feature = "extra-formats")
+        && matches!(lower.as_str(), "webp" | "tif" | "tiff" | "bmp" | "gif");
+    matches!(lower.as_str(), "png" | "jpg" | "jpeg") || is_extra
 }
 
 fn collect_image_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, VisionError> {
