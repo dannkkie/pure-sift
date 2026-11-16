@@ -6,8 +6,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::{
-    Homography2D, SIFT_DESCRIPTOR_LEN, SiftFeature, SimilarityTransform2D, TrackingSummary,
-    estimate_homography_ransac, filter_matches_ransac, match_descriptors, summarize_tracking,
+    DescriptorKind, Homography2D, SIFT_DESCRIPTOR_LEN, SiftFeature, SimilarityTransform2D,
+    TrackingSummary, dequantize_descriptor_u8, estimate_homography_ransac, filter_matches_ransac,
+    match_descriptors, quantize_descriptor_u8, summarize_tracking,
 };
 
 /// Default maximum shortlist size of catalog entries verified with full 128-D SIFT + RANSAC.
@@ -44,6 +45,44 @@ pub struct CatalogEntrySummary {
     pub width: usize,
     pub height: usize,
     pub feature_count: usize,
+}
+
+/// Compact SIFT feature storing quantized `u8` descriptors (128 bytes instead of 512 bytes for `Vec<f32>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompactSiftFeature {
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+    pub response: f32,
+    pub orientation: f32,
+    pub descriptor_u8: Vec<u8>,
+}
+
+impl From<&SiftFeature> for CompactSiftFeature {
+    fn from(feat: &SiftFeature) -> Self {
+        Self {
+            x: feat.x,
+            y: feat.y,
+            scale: feat.scale,
+            response: feat.response,
+            orientation: feat.orientation,
+            descriptor_u8: quantize_descriptor_u8(&feat.descriptor).to_vec(),
+        }
+    }
+}
+
+impl CompactSiftFeature {
+    /// Expands the compact `u8` descriptor back into a unit-L2 `SiftFeature`.
+    pub fn to_sift_feature(&self) -> SiftFeature {
+        SiftFeature {
+            x: self.x,
+            y: self.y,
+            scale: self.scale,
+            response: self.response,
+            orientation: self.orientation,
+            descriptor: dequantize_descriptor_u8(&self.descriptor_u8),
+        }
+    }
 }
 
 /// Stored catalog entry holding an image's extracted SIFT features and transient 128-bit signatures.
@@ -84,6 +123,11 @@ impl CatalogEntry {
             .map(|f| quantize_descriptor_u128(&f.descriptor))
             .collect();
     }
+
+    /// Exports this entry's features with 4x-smaller `u8` quantized descriptors.
+    pub fn compact_features(&self) -> Vec<CompactSiftFeature> {
+        self.features.iter().map(CompactSiftFeature::from).collect()
+    }
 }
 
 /// Ranked visual-search hit produced by `FeatureCatalog::search_features`.
@@ -108,6 +152,8 @@ pub struct FeatureCatalog {
     pub octaves: usize,
     pub scales: usize,
     pub threshold: f32,
+    #[serde(default)]
+    pub descriptor_kind: DescriptorKind,
     pub entries: Vec<CatalogEntry>,
 }
 
@@ -118,6 +164,7 @@ impl FeatureCatalog {
             octaves,
             scales,
             threshold,
+            descriptor_kind: DescriptorKind::Sift,
             entries: Vec::new(),
         }
     }

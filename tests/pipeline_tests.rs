@@ -8,18 +8,19 @@ use std::{
 use image::{GrayImage, ImageFormat, Luma};
 use ndarray::Array2;
 use pure_sift::{
-    catalog::{FeatureCatalog, quantize_descriptor_u128},
+    catalog::{CompactSiftFeature, FeatureCatalog, quantize_descriptor_u128},
     cli::{
         CatalogSearchResponse, CliCommand, FeatureResponse, MatchFeaturesResponse, parse_cli_args,
     },
     pipeline::{
         BASE_SIGMA, DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO,
-        DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch, Homography2D, MatchOptions,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD, DescriptorKind, FeatureMatch, Homography2D, MatchOptions,
         SIFT_DESCRIPTOR_LEN, SiftFeature, SimilarityTransform2D, detect_keypoints,
         detect_keypoints_with_options, estimate_homography_ransac, extract_extrema,
-        extract_sift_features, extract_sift_features_with_options, filter_matches_ransac,
-        gaussian_blur, gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, luma_to_array2,
-        match_descriptors, match_descriptors_with_options, summarize_tracking,
+        extract_sift_features, extract_sift_features_with_kind, extract_sift_features_with_options,
+        filter_matches_ransac, gaussian_blur, gaussian_kernel_1d, gaussian_kernel_2d,
+        generate_dog_space, luma_to_array2, match_descriptors, match_descriptors_with_options,
+        quantize_descriptor_u8, summarize_tracking,
     },
     visualize::{is_sane_homography_for_dims, resolve_safe_alignment_homography},
 };
@@ -1272,4 +1273,56 @@ fn test_mutual_nearest_neighbor_removes_many_to_one_false_match() {
     );
     assert_eq!(mutual[0].query_index, 0);
     assert_eq!(mutual[0].target_index, 0);
+}
+
+#[test]
+fn test_rootsift_normalization_and_u8_descriptor_quantization() {
+    let checker = build_mock_checkerboard_512x512();
+    let sift_feats = extract_sift_features_with_kind(
+        &checker,
+        3,
+        3,
+        DEFAULT_CONTRAST_THRESHOLD,
+        false,
+        DescriptorKind::Sift,
+    );
+    let root_feats = extract_sift_features_with_kind(
+        &checker,
+        3,
+        3,
+        DEFAULT_CONTRAST_THRESHOLD,
+        false,
+        DescriptorKind::RootSift,
+    );
+    assert_eq!(sift_feats.len(), root_feats.len());
+    assert!(!root_feats.is_empty());
+
+    for rf in &root_feats {
+        let l2_norm: f32 = rf.descriptor.iter().map(|&v| v * v).sum::<f32>().sqrt();
+        assert!(
+            (l2_norm - 1.0).abs() < 1e-4,
+            "RootSift descriptor must have unit L2 norm, got {l2_norm}"
+        );
+
+        let q = quantize_descriptor_u8(&rf.descriptor);
+        assert_eq!(q.len(), SIFT_DESCRIPTOR_LEN);
+        let compact = CompactSiftFeature::from(rf);
+        assert_eq!(
+            compact.descriptor_u8.len(),
+            128,
+            "Compact u8 descriptor must be 128 bytes (4x smaller than 512B f32)"
+        );
+        let roundtrip = compact.to_sift_feature();
+        let l2_err: f32 = rf
+            .descriptor
+            .iter()
+            .zip(roundtrip.descriptor.iter())
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            .sqrt();
+        assert!(
+            l2_err < 0.03,
+            "u8 quantization roundtrip L2 error {l2_err} too large"
+        );
+    }
 }
