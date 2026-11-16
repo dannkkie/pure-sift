@@ -7,7 +7,7 @@
 
 > **[Try the Live In-Browser WebAssembly Demo →](https://dannkkie.github.io/pure-sift/)** — drag and drop two images to run SIFT feature extraction, RANSAC matching, and homography stitching 100% locally in your browser (no Rust install or server upload required).
 
-A **100% pure-Rust**, zero-`unsafe` (`#![forbid(unsafe_code)]`) computer vision engine, CLI, visual catalog indexer, and Axum HTTP workbench implementing **SIFT** (*Scale-Invariant Feature Transform*, expired patent `US6711293B1`), **2D Similarity RANSAC**, and **4-Point DLT Planar Homography RANSAC**.
+A **100% pure-Rust**, zero-`unsafe` (`#![forbid(unsafe_code)]`) computer vision engine, CLI, visual catalog indexer, and Axum HTTP workbench implementing **SIFT** (Lowe 2004, expired patent `US6711293B1`), **2D Similarity RANSAC**, and **4-Point DLT Planar Homography RANSAC**.
 
 Zero C/C++ FFI, zero OpenCV/CMake/LLVM build dependencies — compiles cleanly to static binaries, Docker sidecars, mobile targets, and WebAssembly (`--no-default-features` omits `axum`/`tokio`).
 
@@ -112,11 +112,27 @@ cargo build --release
 
 ## Benchmarks & Specification
 
-* Full mathematical derivation & `US6711293B1` compliance notes: [`patent_analysis.md`](patent_analysis.md)
+* Mathematical formulation & implementation reference: [`patent_analysis.md`](patent_analysis.md)
 * Real-camera validation benchmarks tested with `pure-sift`:
   * **Object in Clutter (`box.png` vs. `box_in_scene.png`):** `17/22` Similarity inliers, `18/22` Homography inliers
   * **Oxford VGG 3D Viewpoint Tilt (`graf1.png` vs. `graf3.png`):** `52/103` (`50.5%`) Homography inliers vs. `11/103` rigid-only Similarity
   * **10-MP DSLR Panorama (`boat1.jpg` vs. `boat2.jpg`, `3888x2592`):** `470/617` (`76.2%`) Homography inliers stitched to `5411x2998`
+
+---
+
+## Differences from Lowe (2004) / OpenCV SIFT
+
+While `pure-sift` follows the SIFT formulation of Lowe (2004) / expired patent `US6711293B1`, several design choices and current deviations exist in the codebase. Every deviation below maps to its source location and tracking issue:
+
+| Stage / Parameter | Lowe (2004) / OpenCV SIFT | `pure-sift` Behavior & Code Location | Tracking Issue |
+|---|---|---|---|
+| **Gaussian & DoG slices per octave** | $S + 3$ Gaussians and $S + 2$ DoG slices per octave so $S$ interior levels are searchable; next octave downsamples the $2\sigma_0$ Gaussian at index $S$. | `generate_dog_space` ([`src/pipeline.rs:191`](src/pipeline.rs)) builds `scales + 1` Gaussians and `scales` DoG slices (`scales - 2` searchable levels) and downsamples the final Gaussian. | [#16 (PS-1)](https://github.com/dannkkie/pure-sift/issues/16) |
+| **Gaussian kernel support & descriptor octave sampling** | Kernel radius $\lceil 3\sigma \rceil$ (or $4\sigma$); orientation and descriptors sampled on the keypoint's octave Gaussian image. | `gaussian_kernel_1d` ([`src/pipeline.rs:36`](src/pipeline.rs)) clamps kernel radius to `[1, 6]`; `compute_keypoint_orientations` ([`src/pipeline.rs:702`](src/pipeline.rs)) and `compute_128d_descriptor` ([`src/pipeline.rs:836`](src/pipeline.rs)) clamp window radii to `18 px` and `24 px` on full-resolution bucketed Gaussian planes ([`src/pipeline.rs:635`](src/pipeline.rs)). | [#17 (PS-2)](https://github.com/dannkkie/pure-sift/issues/17) |
+| **Base scale $\sigma_0$ & $2\times$ upsampled first octave** | Doubles input image ($2\times$ bilinear) with assumed camera blur $\sigma_{\text{in}} = 0.5$ ($1.0$ after doubling) and $\sigma_0 = 1.6$. | `BASE_SIGMA = 1.0` ([`src/pipeline.rs:9`](src/pipeline.rs)) starting at native input resolution without pre-blur subtraction. | [#18 (PS-3)](https://github.com/dannkkie/pure-sift/issues/18) |
+| **Feature count cap (`MAX_FEATURES_PER_IMAGE`)** | Optional `nfeatures` cap (default `0` / unlimited in OpenCV). | `MAX_FEATURES_PER_IMAGE = 4096` ([`src/pipeline.rs:551`](src/pipeline.rs)): `extract_sift_features` ([`src/pipeline.rs:1012`](src/pipeline.rs)) sorts candidate keypoints in descending order of `|response|` and truncates to the top `4096` before descriptor extraction (and caps emitted descriptors after orientation splitting at `4096`). `match_descriptors` ([`src/pipeline.rs:1058`](src/pipeline.rs)) also bounds input slices to `4096`. | [#27 (PS-12)](https://github.com/dannkkie/pure-sift/issues/27) |
+| **3D Taylor extremum refinement** | Iterative refinement (up to 5 steps) re-centering the sample grid when $|\delta x|, |\delta y|, |\delta s| > 0.5$. | Single-step 3D Taylor solve in `refine_extremum_3d` ([`src/pipeline.rs:286`](src/pipeline.rs)) accepting offsets in `[-0.5, 0.5]` with a 2D spatial quadratic fallback when the 3D Hessian is near-singular. | Intentional (deterministic constant-time pass) |
+| **Orientation histogram smoothing & peak cap** | $6$ passes of circular $[1/3, 1/3, 1/3]$ box smoothing; no explicit cap on $\ge 80\%$ secondary peaks. | Single circular $[1/3, 1/3, 1/3]$ pass and `MAX_ORIENTATIONS_PER_KEYPOINT = 4` sorted by peak magnitude in `compute_keypoint_orientations` ([`src/pipeline.rs:698`](src/pipeline.rs)). | Intentional (bounds worst-case descriptor fan-out) |
+| **Convolution boundary handling** | Replicate / reflect border padding. | Clamped-to-edge indexing (`saturating_sub` / `.min(width - 1)`) in `gaussian_blur` ([`src/pipeline.rs:98`](src/pipeline.rs)). | Intentional (equivalent to border replication) |
 
 ---
 
