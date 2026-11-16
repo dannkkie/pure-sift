@@ -21,7 +21,7 @@ Zero C/C++ FFI, zero OpenCV/CMake/LLVM build dependencies — compiles cleanly t
 
 ## Core Capabilities
 
-* **Scale-Space DoG Keypoints ([`src/pipeline.rs`](src/pipeline.rs)):** Separable Gaussian pyramid, Difference-of-Gaussians, Hessian edge filtering, and 3D Taylor sub-pixel / sub-scale extremum refinement (`< 0.12 px` localization on smooth Gaussian blobs).
+* **Scale-Space DoG Keypoints ([`src/pipeline.rs`](src/pipeline.rs)):** 2x bilinearly upsampled first octave (`DEFAULT_UPSAMPLE_FIRST_OCTAVE = true`) with `BASE_SIGMA = 1.6` and assumed camera blur `ASSUMED_INPUT_SIGMA = 0.5` (`--no-upsample` to disable), separable Gaussian pyramid (`scales + 3` Gaussians and `scales + 2` DoG slices per octave), Hessian edge filtering, and 3D Taylor sub-pixel / sub-scale extremum refinement (`< 0.12 px` localization on smooth Gaussian blobs).
 * **Canonical Orientation & 128-D SIFT Descriptors:** `>= 80%` secondary orientation peak splitting + Rayon-parallelized 128-D descriptor extraction.
 * **Geometric Verification & Alignment:** Lowe ratio matching, 2D Similarity RANSAC, horizon-guarded 4-point DLT 3x3 Homography estimation (`estimate_homography_ransac`), and bilinear inverse-mapped feather-blended stitching ([`src/visualize.rs`](src/visualize.rs)).
 * **Visual Catalog Search ([`src/catalog.rs`](src/catalog.rs)):** 128-bit `XOR + POPCNT` coarse Hamming shortlisting followed by exact 128-D L2 + geometric RANSAC verification.

@@ -14,9 +14,10 @@ use crate::{
     catalog::{CatalogSearchHit, DEFAULT_CATALOG_SHORTLIST, DEFAULT_CATALOG_TOP_K, FeatureCatalog},
     pipeline::{
         DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO, DEFAULT_RANSAC_REPROJ_THRESHOLD,
-        FeatureMatch, Homography2D, Keypoint, SiftFeature, SimilarityTransform2D, TrackingSummary,
-        compute_sift_descriptors, estimate_homography_ransac, extract_extrema,
-        extract_sift_features, filter_matches_ransac, generate_dog_space, luma_to_array2,
+        DEFAULT_UPSAMPLE_FIRST_OCTAVE, FeatureMatch, Homography2D, Keypoint, SiftFeature,
+        SimilarityTransform2D, TrackingSummary, compute_sift_descriptors,
+        detect_keypoints_with_options, estimate_homography_ransac, extract_sift_features,
+        extract_sift_features_with_options, filter_matches_ransac, luma_to_array2,
         match_descriptors, summarize_tracking,
     },
     visualize::{
@@ -180,13 +181,15 @@ pub fn decode_validated_luma8(
     Ok(decode_validated_dynamic_image(raw_bytes, enforce_pixel_cap)?.into_luma8())
 }
 
-/// Executes the single-image keypoint + optional 128-D SIFT descriptor extraction pipeline.
-pub fn run_extract_from_bytes(
+/// Executes the single-image keypoint + optional 128-D SIFT descriptor extraction pipeline
+/// with explicit control over `upsample_first_octave`.
+pub fn run_extract_from_bytes_with_options(
     raw_bytes: &[u8],
     octaves: usize,
     scales: usize,
     threshold: f32,
     include_descriptors: bool,
+    upsample_first_octave: bool,
     enforce_pixel_cap: bool,
 ) -> Result<FeatureResponse, VisionError> {
     validate_pipeline_params(octaves, scales, threshold)?;
@@ -195,8 +198,13 @@ pub fn run_extract_from_bytes(
     let img_array = luma_to_array2(&luma_img);
     let (height, width) = img_array.dim();
 
-    let dog_space = generate_dog_space(&img_array, octaves, scales);
-    let keypoints = extract_extrema(&dog_space, threshold);
+    let keypoints = detect_keypoints_with_options(
+        &img_array,
+        octaves,
+        scales,
+        threshold,
+        upsample_first_octave,
+    );
     let features = if include_descriptors {
         Some(compute_sift_descriptors(&img_array, &keypoints))
     } else {
@@ -215,9 +223,30 @@ pub fn run_extract_from_bytes(
     })
 }
 
-/// Executes the two-image SIFT matching + Similarity/Homography RANSAC tracking pipeline.
+/// Executes the single-image keypoint + optional 128-D SIFT descriptor extraction pipeline.
+pub fn run_extract_from_bytes(
+    raw_bytes: &[u8],
+    octaves: usize,
+    scales: usize,
+    threshold: f32,
+    include_descriptors: bool,
+    enforce_pixel_cap: bool,
+) -> Result<FeatureResponse, VisionError> {
+    run_extract_from_bytes_with_options(
+        raw_bytes,
+        octaves,
+        scales,
+        threshold,
+        include_descriptors,
+        DEFAULT_UPSAMPLE_FIRST_OCTAVE,
+        enforce_pixel_cap,
+    )
+}
+
+/// Executes the two-image SIFT matching + Similarity/Homography RANSAC tracking pipeline
+/// with explicit control over `upsample_first_octave`.
 #[allow(clippy::too_many_arguments)]
-pub fn run_match_from_bytes(
+pub fn run_match_from_bytes_with_options(
     query_bytes: &[u8],
     target_bytes: &[u8],
     octaves: usize,
@@ -226,6 +255,7 @@ pub fn run_match_from_bytes(
     ratio_threshold: f32,
     ransac_enabled: bool,
     ransac_threshold: f32,
+    upsample_first_octave: bool,
     enforce_pixel_cap: bool,
 ) -> Result<MatchFeaturesResponse, VisionError> {
     validate_pipeline_params(octaves, scales, threshold)?;
@@ -241,8 +271,20 @@ pub fn run_match_from_bytes(
     let (q_h, q_w) = query_arr.dim();
     let (t_h, t_w) = target_arr.dim();
 
-    let query_features = extract_sift_features(&query_arr, octaves, scales, threshold);
-    let target_features = extract_sift_features(&target_arr, octaves, scales, threshold);
+    let query_features = extract_sift_features_with_options(
+        &query_arr,
+        octaves,
+        scales,
+        threshold,
+        upsample_first_octave,
+    );
+    let target_features = extract_sift_features_with_options(
+        &target_arr,
+        octaves,
+        scales,
+        threshold,
+        upsample_first_octave,
+    );
 
     let raw_matches = match_descriptors(&query_features, &target_features, ratio_threshold);
     let tracking = summarize_tracking(&query_features, &target_features, &raw_matches);
@@ -273,6 +315,33 @@ pub fn run_match_from_bytes(
         tracking,
         matches,
     })
+}
+
+/// Executes the two-image SIFT matching + Similarity/Homography RANSAC tracking pipeline.
+#[allow(clippy::too_many_arguments)]
+pub fn run_match_from_bytes(
+    query_bytes: &[u8],
+    target_bytes: &[u8],
+    octaves: usize,
+    scales: usize,
+    threshold: f32,
+    ratio_threshold: f32,
+    ransac_enabled: bool,
+    ransac_threshold: f32,
+    enforce_pixel_cap: bool,
+) -> Result<MatchFeaturesResponse, VisionError> {
+    run_match_from_bytes_with_options(
+        query_bytes,
+        target_bytes,
+        octaves,
+        scales,
+        threshold,
+        ratio_threshold,
+        ransac_enabled,
+        ransac_threshold,
+        DEFAULT_UPSAMPLE_FIRST_OCTAVE,
+        enforce_pixel_cap,
+    )
 }
 
 /// Extracts SIFT features and renders keypoint scale circles + orientation ticks onto the image.
@@ -413,6 +482,7 @@ pub struct ExtractArgs {
     pub scales: usize,
     pub threshold: f32,
     pub include_descriptors: bool,
+    pub upsample_first_octave: bool,
     pub pretty: bool,
 }
 
@@ -428,6 +498,7 @@ pub struct MatchArgs {
     pub ratio: f32,
     pub ransac_enabled: bool,
     pub ransac_threshold: f32,
+    pub upsample_first_octave: bool,
     pub pretty: bool,
 }
 
@@ -836,6 +907,7 @@ fn parse_extract_args(args: &[String]) -> Result<CliCommand, VisionError> {
     let mut scales = DEFAULT_SCALES;
     let mut threshold = DEFAULT_CONTRAST_THRESHOLD;
     let mut include_descriptors = false;
+    let mut upsample_first_octave = DEFAULT_UPSAMPLE_FIRST_OCTAVE;
     let mut pretty = false;
     let mut positional_only = false;
     let mut i = 0;
@@ -875,6 +947,22 @@ fn parse_extract_args(args: &[String]) -> Result<CliCommand, VisionError> {
                         )));
                     }
                     include_descriptors = true;
+                }
+                "--upsample" => {
+                    if inline_val.is_some() {
+                        return Err(VisionError::InvalidInput(format!(
+                            "Flag `{flag}` does not take a value"
+                        )));
+                    }
+                    upsample_first_octave = true;
+                }
+                "--no-upsample" => {
+                    if inline_val.is_some() {
+                        return Err(VisionError::InvalidInput(format!(
+                            "Flag `{flag}` does not take a value"
+                        )));
+                    }
+                    upsample_first_octave = false;
                 }
                 "--pretty" => {
                     if inline_val.is_some() {
@@ -917,6 +1005,7 @@ fn parse_extract_args(args: &[String]) -> Result<CliCommand, VisionError> {
         scales,
         threshold,
         include_descriptors,
+        upsample_first_octave,
         pretty,
     }))
 }
@@ -931,6 +1020,7 @@ fn parse_match_args(args: &[String]) -> Result<CliCommand, VisionError> {
     let mut ratio = DEFAULT_MATCH_RATIO;
     let mut ransac_enabled = true;
     let mut ransac_threshold = DEFAULT_RANSAC_REPROJ_THRESHOLD;
+    let mut upsample_first_octave = DEFAULT_UPSAMPLE_FIRST_OCTAVE;
     let mut pretty = false;
     let mut positional_only = false;
     let mut i = 0;
@@ -979,6 +1069,22 @@ fn parse_match_args(args: &[String]) -> Result<CliCommand, VisionError> {
                     }
                     ransac_enabled = false;
                 }
+                "--upsample" => {
+                    if inline_val.is_some() {
+                        return Err(VisionError::InvalidInput(format!(
+                            "Flag `{flag}` does not take a value"
+                        )));
+                    }
+                    upsample_first_octave = true;
+                }
+                "--no-upsample" => {
+                    if inline_val.is_some() {
+                        return Err(VisionError::InvalidInput(format!(
+                            "Flag `{flag}` does not take a value"
+                        )));
+                    }
+                    upsample_first_octave = false;
+                }
                 "--pretty" => {
                     if inline_val.is_some() {
                         return Err(VisionError::InvalidInput(format!(
@@ -1026,6 +1132,7 @@ fn parse_match_args(args: &[String]) -> Result<CliCommand, VisionError> {
         ratio,
         ransac_enabled,
         ransac_threshold,
+        upsample_first_octave,
         pretty,
     }))
 }
@@ -1203,6 +1310,7 @@ fn parse_pair_visual_args(
             ratio,
             ransac_enabled,
             ransac_threshold,
+            upsample_first_octave: DEFAULT_UPSAMPLE_FIRST_OCTAVE,
             pretty: false,
         },
         output_path,
@@ -1599,12 +1707,13 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                     args.image_path.display()
                 ))
             })?;
-            let response = run_extract_from_bytes(
+            let response = run_extract_from_bytes_with_options(
                 &raw_bytes,
                 args.octaves,
                 args.scales,
                 args.threshold,
                 args.include_descriptors,
+                args.upsample_first_octave,
                 false,
             )?;
             let json = serialize_json(&response, args.pretty)?;
@@ -1633,7 +1742,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                     args.target_path.display()
                 ))
             })?;
-            let response = run_match_from_bytes(
+            let response = run_match_from_bytes_with_options(
                 &query_bytes,
                 &target_bytes,
                 args.octaves,
@@ -1642,6 +1751,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 args.ratio,
                 args.ransac_enabled,
                 args.ransac_threshold,
+                args.upsample_first_octave,
                 false,
             )?;
             let json = serialize_json(&response, args.pretty)?;
