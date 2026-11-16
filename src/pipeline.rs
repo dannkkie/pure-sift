@@ -1275,30 +1275,41 @@ fn descriptor_dist_sq_early_exit(a: &[f32], b: &[f32], cutoff_sq: f32) -> f32 {
     sum
 }
 
+/// Options configuring SIFT descriptor matching.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MatchOptions {
+    /// Lowe's nearest-neighbor distance ratio threshold (`d1 / d2 < ratio`).
+    pub ratio: f32,
+    /// When `true`, enforce mutual nearest-neighbor consistency (cross-check): a match
+    /// `(q, t)` is retained only if `q` is also `t`'s nearest neighbor in `query`.
+    pub mutual: bool,
+}
+
+impl Default for MatchOptions {
+    fn default() -> Self {
+        Self {
+            ratio: DEFAULT_MATCH_RATIO,
+            mutual: false,
+        }
+    }
+}
+
 /// Matches SIFT features from `query` to `target` in parallel across CPU cores via `rayon`
-/// using Euclidean (L2) descriptor distance with 32-element chunked early-exit pruning and
-/// Lowe's nearest-neighbor ambiguity ratio test (`d1 / d2 < ratio_threshold`).
-pub fn match_descriptors(
+/// using Euclidean (L2) descriptor distance, 32-element chunked early-exit pruning, Lowe's ratio
+/// test, and optional mutual-nearest-neighbor cross-checking.
+///
+/// Unlike earlier versions, this function does not silently truncate `query` or `target` to
+/// `MAX_FEATURES_PER_IMAGE`; callers control feature budgets prior to matching.
+pub fn match_descriptors_with_options(
     query: &[SiftFeature],
     target: &[SiftFeature],
-    ratio_threshold: f32,
+    options: MatchOptions,
 ) -> Vec<FeatureMatch> {
     if query.is_empty() || target.len() < 2 {
         return Vec::new();
     }
 
-    let query_slice = if query.len() > MAX_FEATURES_PER_IMAGE {
-        &query[..MAX_FEATURES_PER_IMAGE]
-    } else {
-        query
-    };
-    let target_slice = if target.len() > MAX_FEATURES_PER_IMAGE {
-        &target[..MAX_FEATURES_PER_IMAGE]
-    } else {
-        target
-    };
-
-    query_slice
+    let forward: Vec<FeatureMatch> = query
         .par_iter()
         .enumerate()
         .filter_map(|(q_idx, q_feat)| {
@@ -1310,7 +1321,7 @@ pub fn match_descriptors(
             let mut second_dist_sq = f32::INFINITY;
             let mut best_t_idx = 0usize;
 
-            for (t_idx, t_feat) in target_slice.iter().enumerate() {
+            for (t_idx, t_feat) in target.iter().enumerate() {
                 if t_feat.descriptor.len() != SIFT_DESCRIPTOR_LEN {
                     continue;
                 }
@@ -1335,8 +1346,8 @@ pub fn match_descriptors(
                 let d2 = second_dist_sq.sqrt();
                 let ratio = d1 / d2;
 
-                if ratio < ratio_threshold {
-                    let t_feat = &target_slice[best_t_idx];
+                if ratio < options.ratio {
+                    let t_feat = &target[best_t_idx];
                     return Some(FeatureMatch {
                         query_index: q_idx,
                         target_index: best_t_idx,
@@ -1351,7 +1362,52 @@ pub fn match_descriptors(
 
             None
         })
+        .collect();
+
+    if !options.mutual || forward.is_empty() {
+        return forward;
+    }
+
+    // Reverse nearest-neighbor cross-check: keep `(q, t)` iff `q` is `t`'s nearest neighbor in `query`.
+    forward
+        .into_par_iter()
+        .filter(|m| {
+            let t_desc = &target[m.target_index].descriptor;
+            let mut best_rev_dist_sq = f32::INFINITY;
+            let mut best_q_idx = usize::MAX;
+
+            for (q_idx, q_feat) in query.iter().enumerate() {
+                if q_feat.descriptor.len() != SIFT_DESCRIPTOR_LEN {
+                    continue;
+                }
+                let dist_sq =
+                    descriptor_dist_sq_early_exit(t_desc, &q_feat.descriptor, best_rev_dist_sq);
+                if dist_sq < best_rev_dist_sq {
+                    best_rev_dist_sq = dist_sq;
+                    best_q_idx = q_idx;
+                }
+            }
+
+            best_q_idx == m.query_index
+        })
         .collect()
+}
+
+/// Matches SIFT features from `query` to `target` using Lowe's nearest-neighbor ambiguity ratio
+/// test (`d1 / d2 < ratio_threshold`).
+pub fn match_descriptors(
+    query: &[SiftFeature],
+    target: &[SiftFeature],
+    ratio_threshold: f32,
+) -> Vec<FeatureMatch> {
+    match_descriptors_with_options(
+        query,
+        target,
+        MatchOptions {
+            ratio: ratio_threshold,
+            mutual: false,
+        },
+    )
 }
 
 /// Deterministic 64-bit SplitMix64 generator for reproducible RANSAC pair sampling.
