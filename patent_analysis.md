@@ -41,9 +41,9 @@ Scale space is partitioned into $O$ discrete **octaves** indexed by $o \in \{0, 
    Let $S$ denote the number of scale intervals per octave. Consecutive Gaussian smoothing levels within an octave are separated by a constant multiplicative factor $k$:
    $$k = 2^{1 / S}$$
 2. **Intra-Octave Scale Schedule**:
-   Given initial base smoothing $\sigma_0$ (e.g., $\sigma_0 = 1.6$ or $1.0$), the $i$-th Gaussian image within octave $o$ uses local smoothing parameter:
+   Given initial base smoothing $\sigma_0 = 1.6$ (`BASE_SIGMA = 1.6`) with assumed input sensor blur $\sigma_{\text{in}} = 0.5$ (`ASSUMED_INPUT_SIGMA = 0.5`, doubled to $1.0$ when the base image is $2\times$ bilinearly upsampled via `DEFAULT_UPSAMPLE_FIRST_OCTAVE = true`) and initial pre-blur $\sqrt{\sigma_0^2 - \sigma_{\text{in}}^2}$, the $i$-th Gaussian image within octave $o$ uses local smoothing parameter:
    $$\sigma_i = \sigma_0 \cdot k^i = \sigma_0 \cdot 2^{i / S}, \quad i \in \{0, 1, \dots, N_G - 1\}$$
-   where $N_G = S + 1$ Gaussian images are required to produce $S$ Difference-of-Gaussians (DoG) slices per octave (or $N_G = S + 3$ when covering $S$ interior extremum-searchable DoG intervals).
+   where $N_G = S + 3$ Gaussian images are constructed to produce $S + 2$ Difference-of-Gaussians (DoG) slices covering $S$ interior extremum-searchable DoG intervals.
 3. **Effective Global Scale**:
    Accounting for octave spatial decimation $2^o$, the effective scale in original image coordinates is:
    $$\sigma_{\text{eff}}(o, i) = \sigma_0 \cdot 2^o \cdot k^i = \sigma_0 \cdot 2^{o + i/S}$$

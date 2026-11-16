@@ -5,8 +5,14 @@ use ndarray::Array2;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Base standard deviation (\sigma_0) for the initial Gaussian scale-space level.
-pub const BASE_SIGMA: f32 = 1.0;
+/// Base standard deviation (\sigma_0) for the initial Gaussian scale-space level (Lowe 2004).
+pub const BASE_SIGMA: f32 = 1.6;
+
+/// Assumed intrinsic camera/sensor point-spread standard deviation (\sigma_in) at native input resolution.
+pub const ASSUMED_INPUT_SIGMA: f32 = 0.5;
+
+/// Default setting for 2x bilinear upsampling of the base image prior to building Octave 0.
+pub const DEFAULT_UPSAMPLE_FIRST_OCTAVE: bool = true;
 
 /// Default contrast threshold for 3D DoG extrema extraction on normalized [0.0, 1.0] images.
 pub const DEFAULT_CONTRAST_THRESHOLD: f32 = 0.015;
@@ -93,7 +99,7 @@ pub fn gaussian_blur(img: &Array2<f32>, sigma: f32) -> Array2<f32> {
 
     // Pass 1: Horizontal 1D convolution (row-wise contiguous scan)
     let mut temp = vec![0.0f32; height * width];
-    for (y, out_row) in temp.chunks_exact_mut(width).enumerate() {
+    let horiz_row_fn = |(y, out_row): (usize, &mut [f32])| {
         let in_row = &src_slice[y * width..(y + 1) * width];
 
         if width > 2 * radius {
@@ -140,13 +146,23 @@ pub fn gaussian_blur(img: &Array2<f32>, sigma: f32) -> Array2<f32> {
                 *out_val = acc;
             }
         }
+    };
+
+    if height * width >= 16_384 {
+        temp.par_chunks_exact_mut(width)
+            .enumerate()
+            .for_each(horiz_row_fn);
+    } else {
+        temp.chunks_exact_mut(width)
+            .enumerate()
+            .for_each(horiz_row_fn);
     }
 
     // Pass 2: Vertical 1D convolution implemented as row-wise AXPY accumulations.
     // Iterating across contiguous rows `out_row[x] += weight * temp_row[x]` guarantees
     // unit-stride memory access and direct SIMD auto-vectorization.
     let mut dst = vec![0.0f32; height * width];
-    for (y, out_row) in dst.chunks_exact_mut(width).enumerate() {
+    let vert_row_fn = |(y, out_row): (usize, &mut [f32])| {
         for (k_idx, &weight) in kernel.iter().enumerate() {
             let sample_y = (y + k_idx).saturating_sub(radius).min(height - 1);
             let in_row = &temp[sample_y * width..(sample_y + 1) * width];
@@ -154,6 +170,16 @@ pub fn gaussian_blur(img: &Array2<f32>, sigma: f32) -> Array2<f32> {
                 *out_val += in_val * weight;
             }
         }
+    };
+
+    if height * width >= 16_384 {
+        dst.par_chunks_exact_mut(width)
+            .enumerate()
+            .for_each(vert_row_fn);
+    } else {
+        dst.chunks_exact_mut(width)
+            .enumerate()
+            .for_each(vert_row_fn);
     }
 
     Array2::from_shape_vec((height, width), dst).expect("output shape matches height * width")
@@ -183,16 +209,52 @@ pub fn downsample_2x(img: &Array2<f32>) -> Array2<f32> {
     Array2::from_shape_vec((new_h, new_w), out).expect("downsampled dimensions match buffer length")
 }
 
+/// Upsamples an `Array2<f32>` by a factor of 2 along both spatial axes using bilinear interpolation
+/// aligned so that even coordinates `(2 * y, 2 * x)` coincide with original pixels `(y, x)` and
+/// odd coordinates interpolate midpoint values. Mapping an upsampled coordinate `u` back to the
+/// original image domain is simply `0.5 * u` with zero phase shift across octaves.
+pub fn upsample_2x_bilinear(img: &Array2<f32>) -> Array2<f32> {
+    let (height, width) = img.dim();
+    let new_h = height * 2;
+    let new_w = width * 2;
+    if new_h == 0 || new_w == 0 {
+        return Array2::zeros((0, 0));
+    }
+
+    let src_cow = img.as_standard_layout();
+    let src_slice = src_cow
+        .as_slice()
+        .expect("standard layout guarantees contiguous slice");
+
+    let mut out = vec![0.0f32; new_h * new_w];
+    for (uy, out_row) in out.chunks_exact_mut(new_w).enumerate() {
+        let y0 = uy / 2;
+        let y1 = (y0 + (uy & 1)).min(height - 1);
+        let row0 = &src_slice[y0 * width..(y0 + 1) * width];
+        let row1 = &src_slice[y1 * width..(y1 + 1) * width];
+
+        for (ux, out_val) in out_row.iter_mut().enumerate() {
+            let x0 = ux / 2;
+            let x1 = (x0 + (ux & 1)).min(width - 1);
+            *out_val = 0.25 * (row0[x0] + row0[x1] + row1[x0] + row1[x1]);
+        }
+    }
+
+    Array2::from_shape_vec((new_h, new_w), out).expect("upsampled dimensions match buffer length")
+}
+
 /// Internal pyramid structure holding both Gaussian and Difference-of-Gaussians slices per octave.
 struct ScaleSpaceOctave {
     gaussians: Vec<Array2<f32>>,
     dogs: Vec<Array2<f32>>,
+    octave_multiplier: f32,
 }
 
-fn build_scale_space_pyramid(
+fn build_scale_space_pyramid_with_options(
     img: &Array2<f32>,
     octaves: usize,
     scales: usize,
+    upsample_first_octave: bool,
 ) -> Vec<ScaleSpaceOctave> {
     if img.is_empty() || octaves == 0 || scales == 0 {
         return Vec::new();
@@ -201,7 +263,21 @@ fn build_scale_space_pyramid(
     let dog_slices_per_octave = scales + 2;
     let k = 2.0f32.powf(1.0 / (scales as f32));
     let mut pyramid = Vec::with_capacity(octaves);
-    let mut octave_base = gaussian_blur(img, BASE_SIGMA);
+
+    let (mut octave_base, base_multiplier) = if upsample_first_octave {
+        let up = upsample_2x_bilinear(img);
+        let sigma_in = 2.0 * ASSUMED_INPUT_SIGMA;
+        let init_sigma = (BASE_SIGMA * BASE_SIGMA - sigma_in * sigma_in)
+            .max(1e-4)
+            .sqrt();
+        (gaussian_blur(&up, init_sigma), 0.5f32)
+    } else {
+        let sigma_in = ASSUMED_INPUT_SIGMA;
+        let init_sigma = (BASE_SIGMA * BASE_SIGMA - sigma_in * sigma_in)
+            .max(1e-4)
+            .sqrt();
+        (gaussian_blur(img, init_sigma), 1.0f32)
+    };
 
     for octave in 0..octaves {
         let (h, w) = octave_base.dim();
@@ -254,29 +330,35 @@ fn build_scale_space_pyramid(
             octave_base = prev_gaussian;
         }
 
-        pyramid.push(ScaleSpaceOctave { gaussians, dogs });
+        pyramid.push(ScaleSpaceOctave {
+            gaussians,
+            dogs,
+            octave_multiplier: base_multiplier * ((1usize << octave) as f32),
+        });
     }
 
     pyramid
 }
 
 /// Generates the pyramidal Difference-of-Gaussians (DoG) scale-space representation
-/// across `octaves` octaves and `scales` searchable interior scale levels per octave.
-///
-/// Within each octave (following Lowe 2004 / US6711293B1):
-/// - `scales + 3` Gaussian-smoothed images are computed with exponentially spaced scales
-///   `\sigma_i = \sigma_0 * k^i` (`i in 0..=(scales + 2)`), where `k = 2^(1 / scales)`.
-/// - By the Gaussian semigroup property, each consecutive level blurs the previous Gaussian image
-///   with incremental standard deviation `\Delta\sigma_i = \sqrt(\sigma_i^2 - \sigma_{i-1}^2)`.
-/// - Adjacent Gaussian levels are subtracted element-wise (`L_{i+1} - L_i`) to produce
-///   `scales + 2` DoG slices per octave, yielding `scales` interior 3D-searchable DoG levels.
-/// - Between octaves, the Gaussian image at `2 * \sigma_0` (index `scales`) is decimated by 2x
-///   along each spatial dimension so the next octave begins at effective scale `\sigma_0`.
-pub fn generate_dog_space(img: &Array2<f32>, octaves: usize, scales: usize) -> Vec<Array2<f32>> {
-    build_scale_space_pyramid(img, octaves, scales)
+/// with explicit control over `upsample_first_octave`.
+pub fn generate_dog_space_with_options(
+    img: &Array2<f32>,
+    octaves: usize,
+    scales: usize,
+    upsample_first_octave: bool,
+) -> Vec<Array2<f32>> {
+    build_scale_space_pyramid_with_options(img, octaves, scales, upsample_first_octave)
         .into_iter()
         .flat_map(|oct| oct.dogs)
         .collect()
+}
+
+/// Generates the pyramidal Difference-of-Gaussians (DoG) scale-space representation
+/// across `octaves` octaves and `scales` searchable interior scale levels per octave
+/// starting at the native resolution of `img`.
+pub fn generate_dog_space(img: &Array2<f32>, octaves: usize, scales: usize) -> Vec<Array2<f32>> {
+    generate_dog_space_with_options(img, octaves, scales, false)
 }
 
 /// Evaluates the 2D Hessian principal curvature ratio test at `(x, y)` in `curr_slice`
@@ -429,11 +511,14 @@ fn is_less_than_patch3x3(plane: &[f32], width: usize, x: usize, y: usize, val: f
 }
 
 /// Scans consecutive Difference-of-Gaussians (DoG) scale slices to extract 3D local
-/// minima and maxima across the 26-connected `(3 x 3 x 3)` scale-space neighborhood.
-///
-/// Within each octave of `scales + 2` DoG slices, the `scales` interior slices
-/// (`1..=scales`) are evaluated for strict 3D local extrema exceeding `threshold`.
-pub fn extract_extrema(dog_space: &[Array2<f32>], threshold: f32) -> Vec<Keypoint> {
+/// minima and maxima across the 26-connected `(3 x 3 x 3)` scale-space neighborhood,
+/// scaling spatial coordinates and sigmas by `base_multiplier * 2^octave` (`base_multiplier = 0.5`
+/// when the first octave is 2x upsampled, or `1.0` when starting at native resolution).
+pub fn extract_extrema_with_base_multiplier(
+    dog_space: &[Array2<f32>],
+    threshold: f32,
+    base_multiplier: f32,
+) -> Vec<Keypoint> {
     if dog_space.len() < 3 {
         return Vec::new();
     }
@@ -452,7 +537,7 @@ pub fn extract_extrema(dog_space: &[Array2<f32>], threshold: f32) -> Vec<Keypoin
         // With `scales + 2` DoG slices per octave, there are `scales = len - 2` searchable interior levels
         let searchable_scales = (octave_slices.len() - 2).max(1);
         let k = 2.0f32.powf(1.0 / (searchable_scales as f32));
-        let octave_multiplier = (1usize << octave_idx) as f32;
+        let octave_multiplier = base_multiplier * ((1usize << octave_idx) as f32);
 
         for scale_idx_in_octave in 1..(octave_slices.len() - 1) {
             let prev_cow = octave_slices[scale_idx_in_octave - 1].as_standard_layout();
@@ -514,7 +599,7 @@ pub fn extract_extrema(dog_space: &[Array2<f32>], threshold: f32) -> Vec<Keypoin
                             keypoints.push(Keypoint {
                                 x: ((x as f32) + dx) * octave_multiplier,
                                 y: ((y as f32) + dy) * octave_multiplier,
-                                scale: refined_scale.max(0.5 * BASE_SIGMA),
+                                scale: refined_scale.max(0.25 * BASE_SIGMA),
                                 response: interp_response,
                                 octave: octave_idx,
                                 layer: refined_layer,
@@ -527,6 +612,15 @@ pub fn extract_extrema(dog_space: &[Array2<f32>], threshold: f32) -> Vec<Keypoin
     }
 
     keypoints
+}
+
+/// Scans consecutive Difference-of-Gaussians (DoG) scale slices to extract 3D local
+/// minima and maxima across the 26-connected `(3 x 3 x 3)` scale-space neighborhood.
+///
+/// Within each octave of `scales + 2` DoG slices, the `scales` interior slices
+/// (`1..=scales`) are evaluated for strict 3D local extrema exceeding `threshold`.
+pub fn extract_extrema(dog_space: &[Array2<f32>], threshold: f32) -> Vec<Keypoint> {
+    extract_extrema_with_base_multiplier(dog_space, threshold, 1.0)
 }
 
 /// Converts a grayscale `image::GrayImage` into a normalized `ndarray::Array2<f32>`
@@ -542,16 +636,34 @@ pub fn luma_to_array2(gray: &GrayImage) -> Array2<f32> {
         .expect("GrayImage buffer length matches width * height")
 }
 
+/// Convenience end-to-end pipeline execution with explicit control over `upsample_first_octave`.
+pub fn detect_keypoints_with_options(
+    img: &Array2<f32>,
+    octaves: usize,
+    scales: usize,
+    threshold: f32,
+    upsample_first_octave: bool,
+) -> Vec<Keypoint> {
+    let dog_space = generate_dog_space_with_options(img, octaves, scales, upsample_first_octave);
+    let base_mult = if upsample_first_octave { 0.5 } else { 1.0 };
+    extract_extrema_with_base_multiplier(&dog_space, threshold, base_mult)
+}
+
 /// Convenience end-to-end pipeline execution: generates the DoG scale-space pyramid
-/// and extracts 3D local extrema keypoints.
+/// (using `DEFAULT_UPSAMPLE_FIRST_OCTAVE`) and extracts 3D local extrema keypoints.
 pub fn detect_keypoints(
     img: &Array2<f32>,
     octaves: usize,
     scales: usize,
     threshold: f32,
 ) -> Vec<Keypoint> {
-    let dog_space = generate_dog_space(img, octaves, scales);
-    extract_extrema(&dog_space, threshold)
+    detect_keypoints_with_options(
+        img,
+        octaves,
+        scales,
+        threshold,
+        DEFAULT_UPSAMPLE_FIRST_OCTAVE,
+    )
 }
 
 /// Dimensionality of the canonical SIFT descriptor (4 x 4 spatial subregions x 8 orientation bins).
@@ -1006,7 +1118,7 @@ fn compute_sift_descriptors_from_pyramid(
                 .find(|p| p.octave == oct && p.layer == layer)
                 .expect("octave/layer gradient plane was pre-indexed");
 
-            let oct_mult = (1usize << oct) as f32;
+            let oct_mult = pyramid[oct].octave_multiplier;
             let inv_oct_mult = 1.0 / oct_mult;
             let oct_kp = Keypoint {
                 x: kp.x * inv_oct_mult,
@@ -1059,6 +1171,20 @@ pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Ve
         return Vec::new();
     }
 
+    let max_layer = keypoints.iter().map(|kp| kp.layer).max().unwrap_or(3);
+    let scales = max_layer.max(3);
+    let k = 2.0f32.powf(1.0 / (scales as f32));
+
+    let upsample_first_octave = keypoints
+        .iter()
+        .find(|kp| kp.layer > 0)
+        .map(|kp| {
+            let expected_native =
+                BASE_SIGMA * ((1usize << kp.octave) as f32) * k.powi(kp.layer as i32);
+            (kp.scale / expected_native) < 0.707
+        })
+        .unwrap_or(false);
+
     let max_octave = keypoints
         .iter()
         .map(|kp| {
@@ -1070,29 +1196,28 @@ pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Ve
         })
         .max()
         .unwrap_or(0);
-    let max_layer = keypoints.iter().map(|kp| kp.layer).max().unwrap_or(3);
-    let scales = max_layer.max(3);
-    let pyramid = build_scale_space_pyramid(img, max_octave + 1, scales);
+    let pyramid =
+        build_scale_space_pyramid_with_options(img, max_octave + 1, scales, upsample_first_octave);
 
     compute_sift_descriptors_from_pyramid(&pyramid, keypoints)
 }
 
-/// End-to-end SIFT feature extraction pipeline: detects 3D DoG keypoints with sub-pixel/sub-scale
-/// 3D Taylor refinement, retains up to `MAX_FEATURES_PER_IMAGE` highest-contrast keypoints, and
-/// computes their canonical orientations (with >=80% secondary peak splitting) and 128-D descriptors
-/// reusing the octave Gaussian pyramid.
-pub fn extract_sift_features(
+/// End-to-end SIFT feature extraction pipeline with explicit control over `upsample_first_octave`.
+pub fn extract_sift_features_with_options(
     img: &Array2<f32>,
     octaves: usize,
     scales: usize,
     threshold: f32,
+    upsample_first_octave: bool,
 ) -> Vec<SiftFeature> {
-    let pyramid = build_scale_space_pyramid(img, octaves, scales);
+    let pyramid =
+        build_scale_space_pyramid_with_options(img, octaves, scales, upsample_first_octave);
     let dog_space: Vec<Array2<f32>> = pyramid
         .iter()
         .flat_map(|oct| oct.dogs.iter().cloned())
         .collect();
-    let mut keypoints = extract_extrema(&dog_space, threshold);
+    let base_mult = if upsample_first_octave { 0.5 } else { 1.0 };
+    let mut keypoints = extract_extrema_with_base_multiplier(&dog_space, threshold, base_mult);
     if keypoints.len() > MAX_FEATURES_PER_IMAGE {
         keypoints.sort_by(|a, b| {
             b.response
@@ -1107,6 +1232,25 @@ pub fn extract_sift_features(
         features.truncate(MAX_FEATURES_PER_IMAGE);
     }
     features
+}
+
+/// End-to-end SIFT feature extraction pipeline: detects 3D DoG keypoints with sub-pixel/sub-scale
+/// 3D Taylor refinement (using `DEFAULT_UPSAMPLE_FIRST_OCTAVE`), retains up to `MAX_FEATURES_PER_IMAGE`
+/// highest-contrast keypoints, and computes their canonical orientations (with >=80% secondary peak
+/// splitting) and 128-D descriptors reusing the octave Gaussian pyramid.
+pub fn extract_sift_features(
+    img: &Array2<f32>,
+    octaves: usize,
+    scales: usize,
+    threshold: f32,
+) -> Vec<SiftFeature> {
+    extract_sift_features_with_options(
+        img,
+        octaves,
+        scales,
+        threshold,
+        DEFAULT_UPSAMPLE_FIRST_OCTAVE,
+    )
 }
 
 /// Computes squared Euclidean distance between two 128-D descriptors with early exit

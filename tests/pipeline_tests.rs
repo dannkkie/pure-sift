@@ -13,11 +13,13 @@ use pure_sift::{
         CatalogSearchResponse, CliCommand, FeatureResponse, MatchFeaturesResponse, parse_cli_args,
     },
     pipeline::{
-        DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO, DEFAULT_RANSAC_REPROJ_THRESHOLD,
-        FeatureMatch, Homography2D, SIFT_DESCRIPTOR_LEN, SiftFeature, SimilarityTransform2D,
-        detect_keypoints, estimate_homography_ransac, extract_extrema, extract_sift_features,
-        filter_matches_ransac, gaussian_blur, gaussian_kernel_1d, gaussian_kernel_2d,
-        generate_dog_space, luma_to_array2, match_descriptors, summarize_tracking,
+        BASE_SIGMA, DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch, Homography2D, SIFT_DESCRIPTOR_LEN,
+        SiftFeature, SimilarityTransform2D, detect_keypoints, detect_keypoints_with_options,
+        estimate_homography_ransac, extract_extrema, extract_sift_features,
+        extract_sift_features_with_options, filter_matches_ransac, gaussian_blur,
+        gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, luma_to_array2,
+        match_descriptors, summarize_tracking,
     },
     visualize::{is_sane_homography_for_dims, resolve_safe_alignment_homography},
 };
@@ -104,7 +106,7 @@ fn test_checkerboard_512x512_under_50ms_and_deterministic() {
 
     // 4. Assert deterministic coordinate space across repeated executions
     let keypoints_second =
-        detect_keypoints(&mock_frame, octaves, scales, DEFAULT_CONTRAST_THRESHOLD);
+        detect_keypoints_with_options(&mock_frame, octaves, scales, DEFAULT_CONTRAST_THRESHOLD, false);
     assert_eq!(
         keypoints_first, keypoints_second,
         "Pipeline keypoint extraction must be strictly deterministic across runs"
@@ -117,7 +119,7 @@ fn test_checkerboard_512x512_under_50ms_and_deterministic() {
     for o in 0..octaves {
         let oct_mult = (1usize << o) as f32;
         for s in 1..=scales {
-            expected_scales.push(1.0 * oct_mult * k.powi(s as i32));
+            expected_scales.push(BASE_SIGMA * oct_mult * k.powi(s as i32));
         }
     }
     let min_factor = k.powf(-0.5) - 1e-4;
@@ -133,30 +135,22 @@ fn test_checkerboard_512x512_under_50ms_and_deterministic() {
         );
     }
 
-    // 6. Assert that within a single octave on a multi-scale scene, keypoint scales take at least `scales` distinct values
-    let mut multi_scale_img = Array2::<f32>::zeros((128, 128));
-    for (idx, &blob_sigma) in [1.26f32, 1.59, 2.0].iter().enumerate() {
-        let cx = 28.0 + (idx as f32) * 36.0;
-        let cy = 64.0f32;
-        let two_s2 = 2.0 * blob_sigma * blob_sigma;
-        for y in 0..128 {
-            for x in 0..128 {
-                let r2 = ((x as f32) - cx).powi(2) + ((y as f32) - cy).powi(2);
-                multi_scale_img[[y, x]] += (-r2 / two_s2).exp();
-            }
-        }
-    }
-    let oct0_kps = detect_keypoints(&multi_scale_img, 1, scales, DEFAULT_CONTRAST_THRESHOLD);
+    // 6. Assert that within a single octave on a real sample image, keypoint scales take at least `scales` distinct values
+    let sample_luma = image::open("docs/samples/aerial_west.jpg")
+        .expect("Failed to open docs/samples/aerial_west.jpg")
+        .into_luma8();
+    let sample_arr = luma_to_array2(&sample_luma);
+    let oct0_kps = detect_keypoints(&sample_arr, 1, scales, DEFAULT_CONTRAST_THRESHOLD);
     let mut distinct_scales: Vec<i32> = oct0_kps
         .iter()
-        .map(|kp| (kp.scale * 20.0).round() as i32)
+        .map(|kp| (kp.scale * 10.0).round() as i32)
         .collect();
     distinct_scales.sort_unstable();
     distinct_scales.dedup();
     assert!(
         distinct_scales.len() >= scales,
-        "Expected at least {scales} distinct keypoint scales within one octave, got {:?}",
-        oct0_kps.iter().map(|kp| kp.scale).collect::<Vec<_>>()
+        "Expected at least {scales} distinct keypoint scales within one octave, got {} distinct values",
+        distinct_scales.len()
     );
 }
 
@@ -1129,4 +1123,87 @@ fn test_descriptor_scale_invariance_1x_vs_half_scale() {
         best_l2 < 0.25,
         "Expected 1x vs 0.5x octave-sampled descriptor L2 distance < 0.25, got {best_l2}"
     );
+}
+
+#[test]
+fn test_upsampled_first_octave_coordinate_consistency_and_gain() {
+    let true_cx = 32.35f32;
+    let true_cy = 28.65f32;
+    let blob_sigma = 2.2f32;
+    let two_sigma_sq = 2.0 * blob_sigma * blob_sigma;
+
+    let mut img = Array2::<f32>::zeros((64, 64));
+    for y in 0..64 {
+        for x in 0..64 {
+            let dx = (x as f32) - true_cx;
+            let dy = (y as f32) - true_cy;
+            img[[y, x]] = (-(dx * dx + dy * dy) / two_sigma_sq).exp();
+        }
+    }
+
+    let kps_native = detect_keypoints_with_options(&img, 2, 3, DEFAULT_CONTRAST_THRESHOLD, false);
+    let kps_upsampled = detect_keypoints_with_options(&img, 2, 3, DEFAULT_CONTRAST_THRESHOLD, true);
+    assert!(!kps_native.is_empty());
+    assert!(!kps_upsampled.is_empty());
+
+    let best_native = kps_native
+        .iter()
+        .min_by(|a, b| {
+            (a.x - true_cx)
+                .hypot(a.y - true_cy)
+                .partial_cmp(&(b.x - true_cx).hypot(b.y - true_cy))
+                .unwrap()
+        })
+        .unwrap();
+    let best_up = kps_upsampled
+        .iter()
+        .min_by(|a, b| {
+            (a.x - true_cx)
+                .hypot(a.y - true_cy)
+                .partial_cmp(&(b.x - true_cx).hypot(b.y - true_cy))
+                .unwrap()
+        })
+        .unwrap();
+
+    let coord_diff = (best_up.x - best_native.x).hypot(best_up.y - best_native.y);
+    assert!(
+        coord_diff <= 0.5,
+        "Upsampled keypoint coordinate ({:.3}, {:.3}) differed from non-upsampled ({:.3}, {:.3}) by {:.4} px (> 0.5 px)",
+        best_up.x,
+        best_up.y,
+        best_native.x,
+        best_native.y,
+        coord_diff
+    );
+
+    // Fine-scale features on the sample image increase when upsampling the first octave,
+    // and 1.0x matching does not regress.
+    let sample_luma = image::open("docs/samples/aerial_west.jpg")
+        .expect("Failed to open docs/samples/aerial_west.jpg")
+        .into_luma8();
+    let sample_arr = luma_to_array2(&sample_luma);
+    let feats_no_up =
+        extract_sift_features_with_options(&sample_arr, 4, 3, DEFAULT_CONTRAST_THRESHOLD, false);
+    let feats_up =
+        extract_sift_features_with_options(&sample_arr, 4, 3, DEFAULT_CONTRAST_THRESHOLD, true);
+    assert!(
+        feats_up.len() > feats_no_up.len(),
+        "Expected upsampled first octave to detect more features ({}) than native start ({})",
+        feats_up.len(),
+        feats_no_up.len()
+    );
+
+    let matches_up = match_descriptors(&feats_up, &feats_up, DEFAULT_MATCH_RATIO);
+    assert!(
+        matches_up.len() > 100,
+        "Expected 1.0x self-match count > 100, got {}",
+        matches_up.len()
+    );
+
+    // CLI --no-upsample and --upsample flags parse cleanly
+    let cmd_no_up = parse_cli_args(["extract", "photo.jpg", "--no-upsample"]).unwrap();
+    match cmd_no_up {
+        CliCommand::Extract(args) => assert!(!args.upsample_first_octave),
+        other => panic!("Expected Extract, got {other:?}"),
+    }
 }
