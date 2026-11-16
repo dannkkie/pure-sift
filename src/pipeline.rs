@@ -23,17 +23,23 @@ pub struct Keypoint {
     pub scale: f32,
     /// Difference-of-Gaussians (DoG) response amplitude at the extremum.
     pub response: f32,
+    /// Octave index (`0..octaves`) in which this extremum was localized.
+    #[serde(default)]
+    pub octave: usize,
+    /// Interior scale level index (`1..=scales`) within the octave.
+    #[serde(default)]
+    pub layer: usize,
 }
 
 /// Generates a normalized 1D Gaussian convolution kernel for a given standard deviation `sigma`.
 ///
 /// Uses the analytical 1D Gaussian distribution formula:
 /// `g(x) = (1 / (sqrt(2 * pi) * sigma)) * exp(-(x^2) / (2 * sigma^2))`
+/// truncated at `ceil(3 * sigma)` (minimum radius 1) with no upper radius cap, and
 /// normalized so that all discrete weights sum to `1.0`.
 pub fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
     let clamped_sigma = sigma.max(1e-3);
-    // Truncate kernel at 2.5 * sigma (clamped to [1, 6] for real-time sub-50ms throughput)
-    let radius = ((2.5 * clamped_sigma).ceil() as isize).clamp(1, 6);
+    let radius = ((3.0 * clamped_sigma).ceil() as isize).max(1);
     let two_sigma_sq = 2.0 * clamped_sigma * clamped_sigma;
     let norm_factor = 1.0 / ((2.0 * std::f32::consts::PI).sqrt() * clamped_sigma);
 
@@ -177,26 +183,24 @@ pub fn downsample_2x(img: &Array2<f32>) -> Array2<f32> {
     Array2::from_shape_vec((new_h, new_w), out).expect("downsampled dimensions match buffer length")
 }
 
-/// Generates the pyramidal Difference-of-Gaussians (DoG) scale-space representation
-/// across `octaves` octaves and `scales` searchable interior scale levels per octave.
-///
-/// Within each octave (following Lowe 2004 / US6711293B1):
-/// - `scales + 3` Gaussian-smoothed images are computed with exponentially spaced scales
-///   `\sigma_i = \sigma_0 * k^i` (`i in 0..=(scales + 2)`), where `k = 2^(1 / scales)`.
-/// - By the Gaussian semigroup property, each consecutive level blurs the previous Gaussian image
-///   with incremental standard deviation `\Delta\sigma_i = \sqrt(\sigma_i^2 - \sigma_{i-1}^2)`.
-/// - Adjacent Gaussian levels are subtracted element-wise (`L_{i+1} - L_i`) to produce
-///   `scales + 2` DoG slices per octave, yielding `scales` interior 3D-searchable DoG levels.
-/// - Between octaves, the Gaussian image at `2 * \sigma_0` (index `scales`) is decimated by 2x
-///   along each spatial dimension so the next octave begins at effective scale `\sigma_0`.
-pub fn generate_dog_space(img: &Array2<f32>, octaves: usize, scales: usize) -> Vec<Array2<f32>> {
+/// Internal pyramid structure holding both Gaussian and Difference-of-Gaussians slices per octave.
+struct ScaleSpaceOctave {
+    gaussians: Vec<Array2<f32>>,
+    dogs: Vec<Array2<f32>>,
+}
+
+fn build_scale_space_pyramid(
+    img: &Array2<f32>,
+    octaves: usize,
+    scales: usize,
+) -> Vec<ScaleSpaceOctave> {
     if img.is_empty() || octaves == 0 || scales == 0 {
         return Vec::new();
     }
 
     let dog_slices_per_octave = scales + 2;
     let k = 2.0f32.powf(1.0 / (scales as f32));
-    let mut dog_space = Vec::with_capacity(octaves * dog_slices_per_octave);
+    let mut pyramid = Vec::with_capacity(octaves);
     let mut octave_base = gaussian_blur(img, BASE_SIGMA);
 
     for octave in 0..octaves {
@@ -205,9 +209,12 @@ pub fn generate_dog_space(img: &Array2<f32>, octaves: usize, scales: usize) -> V
             break;
         }
 
+        let mut gaussians = Vec::with_capacity(dog_slices_per_octave + 1);
+        let mut dogs = Vec::with_capacity(dog_slices_per_octave);
+
         let mut prev_gaussian = octave_base;
         let mut prev_sigma = BASE_SIGMA;
-        let mut doubled_sigma_gaussian: Option<Array2<f32>> = None;
+        gaussians.push(prev_gaussian.clone());
 
         for s in 1..=dog_slices_per_octave {
             let target_sigma = BASE_SIGMA * k.powi(s as i32);
@@ -233,27 +240,43 @@ pub fn generate_dog_space(img: &Array2<f32>, octaves: usize, scales: usize) -> V
 
             let dog_img = Array2::from_shape_vec((h, w), diff_vec)
                 .expect("DoG slice shape matches octave dimensions");
-            dog_space.push(dog_img);
-
-            // Capture the Gaussian image at 2 * sigma_0 (index `scales`) for 2x octave decimation
-            if s == scales && octave + 1 < octaves {
-                doubled_sigma_gaussian = Some(next_gaussian.clone());
-            }
+            dogs.push(dog_img);
+            gaussians.push(next_gaussian.clone());
 
             prev_gaussian = next_gaussian;
             prev_sigma = target_sigma;
         }
 
-        // Prepare next octave base by 2x spatial downsampling of the 2 * sigma_0 Gaussian image
+        // Prepare next octave base by 2x spatial downsampling of the 2 * sigma_0 Gaussian image (index `scales`)
         if octave + 1 < octaves {
-            let downsample_src = doubled_sigma_gaussian.as_ref().unwrap_or(&prev_gaussian);
-            octave_base = downsample_2x(downsample_src);
+            octave_base = downsample_2x(&gaussians[scales]);
         } else {
             octave_base = prev_gaussian;
         }
+
+        pyramid.push(ScaleSpaceOctave { gaussians, dogs });
     }
 
-    dog_space
+    pyramid
+}
+
+/// Generates the pyramidal Difference-of-Gaussians (DoG) scale-space representation
+/// across `octaves` octaves and `scales` searchable interior scale levels per octave.
+///
+/// Within each octave (following Lowe 2004 / US6711293B1):
+/// - `scales + 3` Gaussian-smoothed images are computed with exponentially spaced scales
+///   `\sigma_i = \sigma_0 * k^i` (`i in 0..=(scales + 2)`), where `k = 2^(1 / scales)`.
+/// - By the Gaussian semigroup property, each consecutive level blurs the previous Gaussian image
+///   with incremental standard deviation `\Delta\sigma_i = \sqrt(\sigma_i^2 - \sigma_{i-1}^2)`.
+/// - Adjacent Gaussian levels are subtracted element-wise (`L_{i+1} - L_i`) to produce
+///   `scales + 2` DoG slices per octave, yielding `scales` interior 3D-searchable DoG levels.
+/// - Between octaves, the Gaussian image at `2 * \sigma_0` (index `scales`) is decimated by 2x
+///   along each spatial dimension so the next octave begins at effective scale `\sigma_0`.
+pub fn generate_dog_space(img: &Array2<f32>, octaves: usize, scales: usize) -> Vec<Array2<f32>> {
+    build_scale_space_pyramid(img, octaves, scales)
+        .into_iter()
+        .flat_map(|oct| oct.dogs)
+        .collect()
 }
 
 /// Evaluates the 2D Hessian principal curvature ratio test at `(x, y)` in `curr_slice`
@@ -484,11 +507,17 @@ pub fn extract_extrema(dog_space: &[Array2<f32>], threshold: f32) -> Vec<Keypoin
                             refine_extremum_3d(prev_slice, curr_slice, next_slice, width, x, y);
                         if interp_response.abs() > threshold {
                             let refined_scale = effective_scale * k.powf(ds);
+                            let refined_layer = ((scale_idx_in_octave as f32) + ds)
+                                .round()
+                                .clamp(1.0, searchable_scales as f32)
+                                as usize;
                             keypoints.push(Keypoint {
                                 x: ((x as f32) + dx) * octave_multiplier,
                                 y: ((y as f32) + dy) * octave_multiplier,
                                 scale: refined_scale.max(0.5 * BASE_SIGMA),
                                 response: interp_response,
+                                octave: octave_idx,
+                                layer: refined_layer,
                             });
                         }
                     }
@@ -617,30 +646,21 @@ pub struct TrackingSummary {
 /// Secondary orientation peak splitting ratio (`0.80 * dominant_peak`) per US6711293B1.
 pub const SECONDARY_ORI_PEAK_RATIO: f32 = 0.80;
 
-/// Quantizes a continuous keypoint scale `sigma` to the nearest 1/6-octave bucket
-/// so sub-scale refined keypoints share cached Gaussian gradient planes.
-#[inline]
-fn scale_bucket_key(sigma: f32) -> (i32, f32) {
-    let clamped = sigma.max(0.5);
-    let key = (clamped.log2() * 6.0).round() as i32;
-    let bucket_sigma = 2.0f32.powf((key as f32) / 6.0);
-    (key, bucket_sigma)
-}
-
-/// Precomputed gradient magnitude and orientation planes for a single Gaussian scale level.
-struct ScaleGradientPlanes {
-    scale_key: i32,
+/// Precomputed gradient magnitude and orientation planes for a single `(octave, layer)` Gaussian image.
+struct OctaveGradientPlanes {
+    octave: usize,
+    layer: usize,
+    width: usize,
+    height: usize,
     mag: Vec<f32>,
     angle: Vec<f32>,
 }
 
-impl ScaleGradientPlanes {
-    fn compute(img: &Array2<f32>, scale_key: i32, sigma: f32) -> Self {
-        let smoothed = gaussian_blur(img, sigma);
-        let (height, width) = smoothed.dim();
-        let slice = smoothed
-            .as_slice()
-            .expect("smoothed Gaussian image is contiguous");
+impl OctaveGradientPlanes {
+    fn from_gaussian(octave: usize, layer: usize, gaussian: &Array2<f32>) -> Self {
+        let (height, width) = gaussian.dim();
+        let cow = gaussian.as_standard_layout();
+        let slice = cow.as_slice().expect("Gaussian octave image is contiguous");
 
         let mut mag = vec![0.0f32; height * width];
         let mut angle = vec![0.0f32; height * width];
@@ -664,11 +684,38 @@ impl ScaleGradientPlanes {
         }
 
         Self {
-            scale_key,
+            octave,
+            layer,
+            width,
+            height,
             mag,
             angle,
         }
     }
+}
+
+#[inline]
+fn resolve_octave_and_layer(kp: &Keypoint, pyramid: &[ScaleSpaceOctave]) -> (usize, usize) {
+    if pyramid.is_empty() {
+        return (0, 0);
+    }
+    let oct = if kp.layer > 0 {
+        kp.octave.min(pyramid.len() - 1)
+    } else {
+        let ratio = (kp.scale / BASE_SIGMA).max(1.0);
+        (ratio.log2().floor() as usize).min(pyramid.len() - 1)
+    };
+    let g_len = pyramid[oct].gaussians.len();
+    let searchable_scales = g_len.saturating_sub(3).max(1);
+    let layer = if kp.layer > 0 {
+        kp.layer.min(g_len - 1)
+    } else {
+        let oct_mult = (1usize << oct) as f32;
+        let local_sigma = (kp.scale / (BASE_SIGMA * oct_mult)).max(1.0);
+        ((local_sigma.log2() * (searchable_scales as f32)).round() as usize)
+            .clamp(1, g_len.saturating_sub(2).max(1))
+    };
+    (oct, layer)
 }
 
 /// Computes all canonical orientations in `[0, 2*pi)` for a keypoint using a smoothed
@@ -687,7 +734,7 @@ pub fn compute_keypoint_orientations(
     let two_pi = 2.0 * std::f32::consts::PI;
     let sigma_ori = (1.5 * kp.scale).max(1.0);
     let two_sigma_sq = 2.0 * sigma_ori * sigma_ori;
-    let radius = ((3.0 * sigma_ori).ceil() as isize).clamp(2, 18);
+    let radius = ((3.0 * sigma_ori).ceil() as isize).max(2);
 
     let cx = kp.x.round() as isize;
     let cy = kp.y.round() as isize;
@@ -823,7 +870,7 @@ fn compute_128d_descriptor(
 
     let max_radius = ((hist_width * std::f32::consts::SQRT_2 * (GRID_WIDTH as f32 + 1.0) * 0.5)
         .ceil() as isize)
-        .clamp(4, 24);
+        .max(4);
 
     let cx = kp.x.round() as isize;
     let cy = kp.y.round() as isize;
@@ -924,53 +971,67 @@ fn compute_128d_descriptor(
     desc
 }
 
-/// Computes canonical orientations (including >=80% secondary orientation splitting) and 128-D SIFT
-/// descriptors for a slice of detected keypoints in parallel across CPU cores via `rayon`.
-///
-/// Gradient magnitude and orientation planes are cached per 1/6-octave scale bucket (and computed
-/// in parallel across distinct buckets) so multi-thousand keypoint sets require only a small fixed
-/// number of Gaussian blurs while preserving deterministic output order.
-pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Vec<SiftFeature> {
-    let (height, width) = img.dim();
-    if height < 3 || width < 3 || keypoints.is_empty() {
+fn compute_sift_descriptors_from_pyramid(
+    pyramid: &[ScaleSpaceOctave],
+    keypoints: &[Keypoint],
+) -> Vec<SiftFeature> {
+    if pyramid.is_empty() || keypoints.is_empty() {
         return Vec::new();
     }
 
-    // Deduplicate unique keypoint scale buckets in deterministic order
-    let mut unique_scales: Vec<(i32, f32)> = Vec::new();
+    // Deduplicate unique (octave, layer) Gaussian planes referenced by keypoints
+    let mut unique_levels: Vec<(usize, usize)> = Vec::new();
     for kp in keypoints {
-        let (key, bucket_sigma) = scale_bucket_key(kp.scale);
-        if !unique_scales.iter().any(|&(k, _)| k == key) {
-            unique_scales.push((key, bucket_sigma));
+        let level = resolve_octave_and_layer(kp, pyramid);
+        if !unique_levels.contains(&level) {
+            unique_levels.push(level);
         }
     }
 
-    // Compute gradient magnitude & orientation planes in parallel across distinct scale buckets
-    let scale_cache: Vec<ScaleGradientPlanes> = unique_scales
+    // Compute gradient magnitude & orientation planes in parallel directly on the octave Gaussian images
+    let plane_cache: Vec<OctaveGradientPlanes> = unique_levels
         .par_iter()
-        .map(|&(key, sigma)| ScaleGradientPlanes::compute(img, key, sigma))
+        .map(|&(oct, layer)| {
+            OctaveGradientPlanes::from_gaussian(oct, layer, &pyramid[oct].gaussians[layer])
+        })
         .collect();
 
-    // Compute primary + secondary (>=80% peak) orientations and 128-D descriptors in parallel
+    // Compute primary + secondary (>=80% peak) orientations and 128-D descriptors in octave coordinates
     keypoints
         .par_iter()
         .flat_map_iter(|kp| {
-            let (key, _) = scale_bucket_key(kp.scale);
-            let planes = scale_cache
+            let (oct, layer) = resolve_octave_and_layer(kp, pyramid);
+            let planes = plane_cache
                 .iter()
-                .find(|p| p.scale_key == key)
-                .expect("scale bucket key was pre-indexed");
+                .find(|p| p.octave == oct && p.layer == layer)
+                .expect("octave/layer gradient plane was pre-indexed");
 
-            let orientations =
-                compute_keypoint_orientations(&planes.mag, &planes.angle, width, height, kp);
+            let oct_mult = (1usize << oct) as f32;
+            let inv_oct_mult = 1.0 / oct_mult;
+            let oct_kp = Keypoint {
+                x: kp.x * inv_oct_mult,
+                y: kp.y * inv_oct_mult,
+                scale: (kp.scale * inv_oct_mult).max(0.5 * BASE_SIGMA),
+                response: kp.response,
+                octave: oct,
+                layer,
+            };
+
+            let orientations = compute_keypoint_orientations(
+                &planes.mag,
+                &planes.angle,
+                planes.width,
+                planes.height,
+                &oct_kp,
+            );
 
             orientations.into_iter().map(move |orientation| {
                 let descriptor = compute_128d_descriptor(
                     &planes.mag,
                     &planes.angle,
-                    width,
-                    height,
-                    kp,
+                    planes.width,
+                    planes.height,
+                    &oct_kp,
                     orientation,
                 );
 
@@ -987,16 +1048,51 @@ pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Ve
         .collect()
 }
 
+/// Computes canonical orientations (including >=80% secondary orientation splitting) and 128-D SIFT
+/// descriptors for a slice of detected keypoints in parallel across CPU cores via `rayon`.
+///
+/// Gradient magnitude and orientation planes are computed on each keypoint's octave Gaussian image
+/// with window radii proportional to the keypoint's octave-local scale.
+pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Vec<SiftFeature> {
+    let (height, width) = img.dim();
+    if height < 3 || width < 3 || keypoints.is_empty() {
+        return Vec::new();
+    }
+
+    let max_octave = keypoints
+        .iter()
+        .map(|kp| {
+            if kp.layer > 0 {
+                kp.octave
+            } else {
+                (kp.scale / BASE_SIGMA).max(1.0).log2().floor() as usize
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    let max_layer = keypoints.iter().map(|kp| kp.layer).max().unwrap_or(3);
+    let scales = max_layer.max(3);
+    let pyramid = build_scale_space_pyramid(img, max_octave + 1, scales);
+
+    compute_sift_descriptors_from_pyramid(&pyramid, keypoints)
+}
+
 /// End-to-end SIFT feature extraction pipeline: detects 3D DoG keypoints with sub-pixel/sub-scale
 /// 3D Taylor refinement, retains up to `MAX_FEATURES_PER_IMAGE` highest-contrast keypoints, and
-/// computes their canonical orientations (with >=80% secondary peak splitting) and 128-D descriptors.
+/// computes their canonical orientations (with >=80% secondary peak splitting) and 128-D descriptors
+/// reusing the octave Gaussian pyramid.
 pub fn extract_sift_features(
     img: &Array2<f32>,
     octaves: usize,
     scales: usize,
     threshold: f32,
 ) -> Vec<SiftFeature> {
-    let mut keypoints = detect_keypoints(img, octaves, scales, threshold);
+    let pyramid = build_scale_space_pyramid(img, octaves, scales);
+    let dog_space: Vec<Array2<f32>> = pyramid
+        .iter()
+        .flat_map(|oct| oct.dogs.iter().cloned())
+        .collect();
+    let mut keypoints = extract_extrema(&dog_space, threshold);
     if keypoints.len() > MAX_FEATURES_PER_IMAGE {
         keypoints.sort_by(|a, b| {
             b.response
@@ -1006,7 +1102,7 @@ pub fn extract_sift_features(
         });
         keypoints.truncate(MAX_FEATURES_PER_IMAGE);
     }
-    let mut features = compute_sift_descriptors(img, &keypoints);
+    let mut features = compute_sift_descriptors_from_pyramid(&pyramid, &keypoints);
     if features.len() > MAX_FEATURES_PER_IMAGE {
         features.truncate(MAX_FEATURES_PER_IMAGE);
     }
