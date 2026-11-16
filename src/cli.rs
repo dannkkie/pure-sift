@@ -30,7 +30,8 @@ pub const DEFAULT_OCTAVES: usize = 3;
 pub const MIN_OCTAVES: usize = 1;
 pub const MAX_OCTAVES: usize = 8;
 
-/// Default number of Difference-of-Gaussians (DoG) scales per octave.
+/// Default number of searchable Difference-of-Gaussians (DoG) scale levels per octave
+/// (`scales + 3` Gaussians and `scales + 2` DoG slices are built per octave).
 pub const DEFAULT_SCALES: usize = 3;
 pub const MIN_SCALES: usize = 3;
 pub const MAX_SCALES: usize = 10;

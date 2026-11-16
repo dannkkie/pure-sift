@@ -110,10 +110,16 @@ fn test_checkerboard_512x512_under_50ms_and_deterministic() {
         "Pipeline keypoint extraction must be strictly deterministic across runs"
     );
 
-    // 5. Assert interior scale values across octaves follow sigma_0 * (2^octave) * k^(1 + ds)
-    // with 3D Taylor sub-scale offset ds in [-0.5, 0.5].
+    // 5. Assert interior scale values across octaves follow sigma_0 * (2^octave) * k^(s + ds)
+    // for s in 1..=scales with 3D Taylor sub-scale offset ds in [-0.5, 0.5].
     let k = 2.0f32.powf(1.0 / (scales as f32));
-    let expected_scales = [1.0 * k, 2.0 * k, 4.0 * k];
+    let mut expected_scales = Vec::with_capacity(octaves * scales);
+    for o in 0..octaves {
+        let oct_mult = (1usize << o) as f32;
+        for s in 1..=scales {
+            expected_scales.push(1.0 * oct_mult * k.powi(s as i32));
+        }
+    }
     let min_factor = k.powf(-0.5) - 1e-4;
     let max_factor = k.powf(0.5) + 1e-4;
     for kp in &keypoints_first {
@@ -126,6 +132,32 @@ fn test_checkerboard_512x512_under_50ms_and_deterministic() {
             expected_scales
         );
     }
+
+    // 6. Assert that within a single octave on a multi-scale scene, keypoint scales take at least `scales` distinct values
+    let mut multi_scale_img = Array2::<f32>::zeros((128, 128));
+    for (idx, &blob_sigma) in [1.26f32, 1.59, 2.0].iter().enumerate() {
+        let cx = 28.0 + (idx as f32) * 36.0;
+        let cy = 64.0f32;
+        let two_s2 = 2.0 * blob_sigma * blob_sigma;
+        for y in 0..128 {
+            for x in 0..128 {
+                let r2 = ((x as f32) - cx).powi(2) + ((y as f32) - cy).powi(2);
+                multi_scale_img[[y, x]] += (-r2 / two_s2).exp();
+            }
+        }
+    }
+    let oct0_kps = detect_keypoints(&multi_scale_img, 1, scales, DEFAULT_CONTRAST_THRESHOLD);
+    let mut distinct_scales: Vec<i32> = oct0_kps
+        .iter()
+        .map(|kp| (kp.scale * 20.0).round() as i32)
+        .collect();
+    distinct_scales.sort_unstable();
+    distinct_scales.dedup();
+    assert!(
+        distinct_scales.len() >= scales,
+        "Expected at least {scales} distinct keypoint scales within one octave, got {:?}",
+        oct0_kps.iter().map(|kp| kp.scale).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -133,20 +165,21 @@ fn test_dog_pyramid_octave_downsampling_dimensions() {
     let mock_frame = build_mock_checkerboard_512x512();
     let octaves = 3;
     let scales = 3;
+    let slices_per_octave = scales + 2;
 
     let dog_space = generate_dog_space(&mock_frame, octaves, scales);
-    assert_eq!(dog_space.len(), octaves * scales);
+    assert_eq!(dog_space.len(), octaves * slices_per_octave);
 
-    // Octave 0: 512x512
-    for slice in &dog_space[0..3] {
+    // Octave 0: 512x512 (scales + 2 = 5 DoG slices)
+    for slice in &dog_space[0..5] {
         assert_eq!(slice.dim(), (512, 512));
     }
     // Octave 1: 2x downsampled -> 256x256
-    for slice in &dog_space[3..6] {
+    for slice in &dog_space[5..10] {
         assert_eq!(slice.dim(), (256, 256));
     }
     // Octave 2: 4x downsampled -> 128x128
-    for slice in &dog_space[6..9] {
+    for slice in &dog_space[10..15] {
         assert_eq!(slice.dim(), (128, 128));
     }
 }
