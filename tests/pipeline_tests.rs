@@ -105,8 +105,13 @@ fn test_checkerboard_512x512_under_50ms_and_deterministic() {
     }
 
     // 4. Assert deterministic coordinate space across repeated executions
-    let keypoints_second =
-        detect_keypoints_with_options(&mock_frame, octaves, scales, DEFAULT_CONTRAST_THRESHOLD, false);
+    let keypoints_second = detect_keypoints_with_options(
+        &mock_frame,
+        octaves,
+        scales,
+        DEFAULT_CONTRAST_THRESHOLD,
+        false,
+    );
     assert_eq!(
         keypoints_first, keypoints_second,
         "Pipeline keypoint extraction must be strictly deterministic across runs"
