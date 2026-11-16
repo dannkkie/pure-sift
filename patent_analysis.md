@@ -218,3 +218,25 @@ Given a query feature set $\mathcal{F}^Q = \{(\mathbf{p}_i^Q, \sigma_i^Q, \theta
    Across all accepted matches $\mathcal{M}$, aggregate frame-to-frame motion estimates:
    $$\Delta\bar{\mathbf{p}} = \frac{1}{|\mathcal{M}|}\sum_{(i,j)\in\mathcal{M}} (\mathbf{p}_j^T - \mathbf{p}_i^Q), \quad \bar{s} = \frac{1}{|\mathcal{M}|}\sum_{(i,j)\in\mathcal{M}} \frac{\sigma_j^T}{\sigma_i^Q}, \quad \Delta\bar{\theta} = \operatorname{atan2}\left(\sum \sin(\theta_j^T - \theta_i^Q),\, \sum \cos(\theta_j^T - \theta_i^Q)\right)$$
 
+---
+
+## 6. Implementation Deviations in `pure-sift` Relative to Lowe (2004) / OpenCV
+
+This document serves as the mathematical reference for SIFT (Lowe 2004, expired patent `US6711293B1`). The `pure-sift` implementation differs from the canonical paper and OpenCV in the following specific ways:
+
+1. **Octave Slice Count (`src/pipeline.rs:191`, [#16](https://github.com/dannkkie/pure-sift/issues/16)):**
+   `generate_dog_space` constructs `scales + 1` Gaussian levels (`scales` DoG slices), leaving `scales - 2` interior DoG levels searchable per octave instead of generating `scales + 3` Gaussians (`scales + 2` DoG slices) for `scales` searchable levels.
+2. **Kernel & Window Radius Clamping and Full-Resolution Gradient Buckets (`src/pipeline.rs:36`, `src/pipeline.rs:635`, `src/pipeline.rs:702`, `src/pipeline.rs:836`, [#17](https://github.com/dannkkie/pure-sift/issues/17)):**
+   - `gaussian_kernel_1d` truncates at $\lceil 2.5\sigma \rceil$ clamped to $[1, 6]$.
+   - `compute_keypoint_orientations` clamps its window radius to $[2, 18]$ px and `compute_128d_descriptor` clamps its sampling radius to $[4, 24]$ px.
+   - `compute_sift_descriptors` computes gradient magnitude/orientation planes on the full-resolution image blurred at quantized $1/6$-octave scale buckets (`scale_bucket_key`) rather than directly indexing the octave Gaussian pyramid.
+3. **Initial Scale $\sigma_0$ and Base Resolution (`src/pipeline.rs:9`, [#18](https://github.com/dannkkie/pure-sift/issues/18)):**
+   `BASE_SIGMA` is `1.0` on the native-resolution image without a $2\times$ bilinearly upsampled pre-octave ($\sigma_0 = 1.6$ with $\sigma_{\text{in}} = 0.5$).
+4. **Top-Contrast Keypoint Cap (`MAX_FEATURES_PER_IMAGE = 4096`, `src/pipeline.rs:551`, `src/pipeline.rs:1012`, `src/pipeline.rs:1058`, [#27](https://github.com/dannkkie/pure-sift/issues/27)):**
+   To bound $O(N \cdot M)$ matching latency on dense high-resolution frames, `extract_sift_features` sorts candidate keypoints by descending $|D(\hat{\mathbf{x}})|$ (`response.abs()`) and retains at most `4096` keypoints prior to orientation/descriptor extraction (and truncates the resulting feature list to `4096`). `match_descriptors` similarly slices query and target inputs to at most `4096` features.
+5. **Single-Step 3D Taylor Refinement with 2D Fallback (`src/pipeline.rs:286`):**
+   `refine_extremum_3d` solves a single $3 \times 3$ linear system without iterative grid walk and falls back to 2D spatial quadratic refinement if the 3D Hessian determinant is near zero or the step exceeds $0.5$ px.
+6. **Orientation Histogram Smoothing & Peak Cap (`src/pipeline.rs:698`, `src/pipeline.rs:738`):**
+   Applies one pass of circular $[1/3, 1/3, 1/3]$ smoothing and caps emitted orientations at `MAX_ORIENTATIONS_PER_KEYPOINT = 4` per keypoint (ordered by peak strength).
+
+
