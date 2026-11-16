@@ -15,8 +15,8 @@ use pure_sift::{
     pipeline::{
         BASE_SIGMA, DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO,
         DEFAULT_RANSAC_REPROJ_THRESHOLD, DescriptorKind, FeatureMatch, Homography, Homography2D,
-        MatchOptions, Matcher, RansacOptions, SIFT_DESCRIPTOR_LEN, Sift, SiftConfig, SiftFeature,
-        SimilarityTransform2D, detect_keypoints, detect_keypoints_with_options,
+        MatchOptions, Matcher, Pyramid, RansacOptions, SIFT_DESCRIPTOR_LEN, Sift, SiftConfig,
+        SiftFeature, SimilarityTransform2D, detect_keypoints, detect_keypoints_with_options,
         estimate_homography_ransac, extract_extrema, extract_sift_features,
         extract_sift_features_with_kind, extract_sift_features_with_options, filter_matches_ransac,
         gaussian_blur, gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, luma_to_array2,
@@ -1357,4 +1357,22 @@ fn test_sift_config_builder_and_oo_api() {
     let (inliers, homography) = Homography::estimate(&matches, RansacOptions::default());
     assert!(!inliers.is_empty());
     assert!(homography.is_some());
+}
+
+#[test]
+fn test_pyramid_matches_legacy_dog_space_output() {
+    let checker = build_mock_checkerboard_512x512();
+    let cfg = SiftConfig::default().upsample_first_octave(false);
+    let pyramid = Pyramid::build(&checker, &cfg);
+    assert_eq!(pyramid.octaves.len(), cfg.octaves);
+    assert_eq!(pyramid.octaves[0].gaussians.len(), cfg.scales + 3);
+    assert_eq!(pyramid.octaves[0].dogs.len(), cfg.scales + 2);
+
+    let kps_pyramid = pyramid.extract_extrema(DEFAULT_CONTRAST_THRESHOLD);
+    let dog_space = generate_dog_space(&checker, cfg.octaves, cfg.scales);
+    let kps_legacy = extract_extrema(&dog_space, DEFAULT_CONTRAST_THRESHOLD);
+    assert_eq!(
+        kps_pyramid, kps_legacy,
+        "Explicit Pyramid extrema must match legacy Vec<Array2<f32>> DoG output"
+    );
 }

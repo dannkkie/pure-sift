@@ -444,11 +444,64 @@ pub fn upsample_2x_bilinear(img: &Array2<f32>) -> Array2<f32> {
     Array2::from_shape_vec((new_h, new_w), out).expect("upsampled dimensions match buffer length")
 }
 
-/// Internal pyramid structure holding both Gaussian and Difference-of-Gaussians slices per octave.
-struct ScaleSpaceOctave {
-    gaussians: Vec<Array2<f32>>,
-    dogs: Vec<Array2<f32>>,
-    octave_multiplier: f32,
+/// Single scale-space octave holding its Gaussian pyramid levels, Difference-of-Gaussians
+/// (DoG) slices, and spatial `scale_factor` relative to the original input image (`0.5` when the
+/// first octave is 2x upsampled, `1.0` at native resolution, `2.0` at octave+1, etc.).
+#[derive(Debug, Clone)]
+pub struct Octave {
+    pub gaussians: Vec<Array2<f32>>,
+    pub dogs: Vec<Array2<f32>>,
+    pub scale_factor: f32,
+}
+
+/// Explicit octave-indexed Gaussian and Difference-of-Gaussians (DoG) scale-space pyramid.
+#[derive(Debug, Clone)]
+pub struct Pyramid {
+    pub octaves: Vec<Octave>,
+    pub scales: usize,
+}
+
+impl Pyramid {
+    /// Builds the full Gaussian + DoG pyramid for `img` using `config`.
+    pub fn build(img: &Array2<f32>, config: &SiftConfig) -> Self {
+        Self::build_with_params(
+            img,
+            config.octaves,
+            config.scales,
+            config.upsample_first_octave,
+        )
+    }
+
+    /// Builds the full Gaussian + DoG pyramid with explicit `(octaves, scales, upsample_first_octave)`.
+    pub fn build_with_params(
+        img: &Array2<f32>,
+        octaves: usize,
+        scales: usize,
+        upsample_first_octave: bool,
+    ) -> Self {
+        let octave_vec =
+            build_scale_space_pyramid_with_options(img, octaves, scales, upsample_first_octave);
+        Self {
+            octaves: octave_vec,
+            scales,
+        }
+    }
+
+    /// Extracts 3D DoG extrema keypoints directly from this explicit octave/level pyramid
+    /// without relying on spatial dimension comparisons.
+    pub fn extract_extrema(&self, threshold: f32) -> Vec<Keypoint> {
+        let mut keypoints = Vec::new();
+        for (octave_idx, oct) in self.octaves.iter().enumerate() {
+            extract_extrema_in_octave_slices(
+                octave_idx,
+                &oct.dogs,
+                oct.scale_factor,
+                threshold,
+                &mut keypoints,
+            );
+        }
+        keypoints
+    }
 }
 
 fn build_scale_space_pyramid_with_options(
@@ -456,7 +509,7 @@ fn build_scale_space_pyramid_with_options(
     octaves: usize,
     scales: usize,
     upsample_first_octave: bool,
-) -> Vec<ScaleSpaceOctave> {
+) -> Vec<Octave> {
     if img.is_empty() || octaves == 0 || scales == 0 {
         return Vec::new();
     }
@@ -531,10 +584,10 @@ fn build_scale_space_pyramid_with_options(
             octave_base = prev_gaussian;
         }
 
-        pyramid.push(ScaleSpaceOctave {
+        pyramid.push(Octave {
             gaussians,
             dogs,
-            octave_multiplier: base_multiplier * ((1usize << octave) as f32),
+            scale_factor: base_multiplier * ((1usize << octave) as f32),
         });
     }
 
@@ -711,6 +764,96 @@ fn is_less_than_patch3x3(plane: &[f32], width: usize, x: usize, y: usize, val: f
         && val < r2[x + 1]
 }
 
+fn extract_extrema_in_octave_slices(
+    octave_idx: usize,
+    octave_slices: &[Array2<f32>],
+    octave_multiplier: f32,
+    threshold: f32,
+    keypoints: &mut Vec<Keypoint>,
+) {
+    if octave_slices.len() < 3 {
+        return;
+    }
+    let (height, width) = octave_slices[0].dim();
+    if height < 3 || width < 3 {
+        return;
+    }
+
+    // With `scales + 2` DoG slices per octave, there are `scales = len - 2` searchable interior levels
+    let searchable_scales = (octave_slices.len() - 2).max(1);
+    let k = 2.0f32.powf(1.0 / (searchable_scales as f32));
+
+    for scale_idx_in_octave in 1..(octave_slices.len() - 1) {
+        let prev_cow = octave_slices[scale_idx_in_octave - 1].as_standard_layout();
+        let curr_cow = octave_slices[scale_idx_in_octave].as_standard_layout();
+        let next_cow = octave_slices[scale_idx_in_octave + 1].as_standard_layout();
+
+        let prev_slice = prev_cow.as_slice().expect("standard layout slice");
+        let curr_slice = curr_cow.as_slice().expect("standard layout slice");
+        let next_slice = next_cow.as_slice().expect("standard layout slice");
+
+        let effective_scale = BASE_SIGMA * octave_multiplier * k.powi(scale_idx_in_octave as i32);
+
+        for y in 1..(height - 1) {
+            let r_above = &curr_slice[(y - 1) * width..y * width];
+            let r_curr = &curr_slice[y * width..(y + 1) * width];
+            let r_below = &curr_slice[(y + 1) * width..(y + 2) * width];
+
+            for x in 1..(width - 1) {
+                let val = r_curr[x];
+                if val.abs() <= threshold {
+                    continue;
+                }
+
+                let is_extremum = if val > 0.0 {
+                    // Check 8 spatial neighbors in current scale plane first (fast short-circuit)
+                    val > r_curr[x - 1]
+                        && val > r_curr[x + 1]
+                        && val > r_above[x - 1]
+                        && val > r_above[x]
+                        && val > r_above[x + 1]
+                        && val > r_below[x - 1]
+                        && val > r_below[x]
+                        && val > r_below[x + 1]
+                        && is_greater_than_patch3x3(prev_slice, width, x, y, val)
+                        && is_greater_than_patch3x3(next_slice, width, x, y, val)
+                } else {
+                    val < r_curr[x - 1]
+                        && val < r_curr[x + 1]
+                        && val < r_above[x - 1]
+                        && val < r_above[x]
+                        && val < r_above[x + 1]
+                        && val < r_below[x - 1]
+                        && val < r_below[x]
+                        && val < r_below[x + 1]
+                        && is_less_than_patch3x3(prev_slice, width, x, y, val)
+                        && is_less_than_patch3x3(next_slice, width, x, y, val)
+                };
+
+                if is_extremum && passes_hessian_edge_test(curr_slice, width, x, y, val) {
+                    let (dx, dy, ds, interp_response) =
+                        refine_extremum_3d(prev_slice, curr_slice, next_slice, width, x, y);
+                    if interp_response.abs() > threshold {
+                        let refined_scale = effective_scale * k.powf(ds);
+                        let refined_layer = ((scale_idx_in_octave as f32) + ds)
+                            .round()
+                            .clamp(1.0, searchable_scales as f32)
+                            as usize;
+                        keypoints.push(Keypoint {
+                            x: ((x as f32) + dx) * octave_multiplier,
+                            y: ((y as f32) + dy) * octave_multiplier,
+                            scale: refined_scale.max(0.25 * BASE_SIGMA),
+                            response: interp_response,
+                            octave: octave_idx,
+                            layer: refined_layer,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Scans consecutive Difference-of-Gaussians (DoG) scale slices to extract 3D local
 /// minima and maxima across the 26-connected `(3 x 3 x 3)` scale-space neighborhood,
 /// scaling spatial coordinates and sigmas by `base_multiplier * 2^octave` (`base_multiplier = 0.5`
@@ -725,91 +868,15 @@ pub fn extract_extrema_with_base_multiplier(
     }
 
     let mut keypoints = Vec::new();
-
     for (octave_idx, octave_slices) in dog_space.chunk_by(|a, b| a.dim() == b.dim()).enumerate() {
-        if octave_slices.len() < 3 {
-            continue;
-        }
-        let (height, width) = octave_slices[0].dim();
-        if height < 3 || width < 3 {
-            continue;
-        }
-
-        // With `scales + 2` DoG slices per octave, there are `scales = len - 2` searchable interior levels
-        let searchable_scales = (octave_slices.len() - 2).max(1);
-        let k = 2.0f32.powf(1.0 / (searchable_scales as f32));
         let octave_multiplier = base_multiplier * ((1usize << octave_idx) as f32);
-
-        for scale_idx_in_octave in 1..(octave_slices.len() - 1) {
-            let prev_cow = octave_slices[scale_idx_in_octave - 1].as_standard_layout();
-            let curr_cow = octave_slices[scale_idx_in_octave].as_standard_layout();
-            let next_cow = octave_slices[scale_idx_in_octave + 1].as_standard_layout();
-
-            let prev_slice = prev_cow.as_slice().expect("standard layout slice");
-            let curr_slice = curr_cow.as_slice().expect("standard layout slice");
-            let next_slice = next_cow.as_slice().expect("standard layout slice");
-
-            let effective_scale =
-                BASE_SIGMA * octave_multiplier * k.powi(scale_idx_in_octave as i32);
-
-            for y in 1..(height - 1) {
-                let r_above = &curr_slice[(y - 1) * width..y * width];
-                let r_curr = &curr_slice[y * width..(y + 1) * width];
-                let r_below = &curr_slice[(y + 1) * width..(y + 2) * width];
-
-                for x in 1..(width - 1) {
-                    let val = r_curr[x];
-                    if val.abs() <= threshold {
-                        continue;
-                    }
-
-                    let is_extremum = if val > 0.0 {
-                        // Check 8 spatial neighbors in current scale plane first (fast short-circuit)
-                        val > r_curr[x - 1]
-                            && val > r_curr[x + 1]
-                            && val > r_above[x - 1]
-                            && val > r_above[x]
-                            && val > r_above[x + 1]
-                            && val > r_below[x - 1]
-                            && val > r_below[x]
-                            && val > r_below[x + 1]
-                            && is_greater_than_patch3x3(prev_slice, width, x, y, val)
-                            && is_greater_than_patch3x3(next_slice, width, x, y, val)
-                    } else {
-                        val < r_curr[x - 1]
-                            && val < r_curr[x + 1]
-                            && val < r_above[x - 1]
-                            && val < r_above[x]
-                            && val < r_above[x + 1]
-                            && val < r_below[x - 1]
-                            && val < r_below[x]
-                            && val < r_below[x + 1]
-                            && is_less_than_patch3x3(prev_slice, width, x, y, val)
-                            && is_less_than_patch3x3(next_slice, width, x, y, val)
-                    };
-
-                    if is_extremum && passes_hessian_edge_test(curr_slice, width, x, y, val) {
-                        let (dx, dy, ds, interp_response) =
-                            refine_extremum_3d(prev_slice, curr_slice, next_slice, width, x, y);
-                        if interp_response.abs() > threshold {
-                            let refined_scale = effective_scale * k.powf(ds);
-                            let refined_layer = ((scale_idx_in_octave as f32) + ds)
-                                .round()
-                                .clamp(1.0, searchable_scales as f32)
-                                as usize;
-                            keypoints.push(Keypoint {
-                                x: ((x as f32) + dx) * octave_multiplier,
-                                y: ((y as f32) + dy) * octave_multiplier,
-                                scale: refined_scale.max(0.25 * BASE_SIGMA),
-                                response: interp_response,
-                                octave: octave_idx,
-                                layer: refined_layer,
-                            });
-                        }
-                    }
-                }
-            }
-        }
+        extract_extrema_in_octave_slices(
+            octave_idx,
+            octave_slices,
+            octave_multiplier,
+            threshold,
+            &mut keypoints,
+        );
     }
 
     keypoints
@@ -845,9 +912,8 @@ pub fn detect_keypoints_with_options(
     threshold: f32,
     upsample_first_octave: bool,
 ) -> Vec<Keypoint> {
-    let dog_space = generate_dog_space_with_options(img, octaves, scales, upsample_first_octave);
-    let base_mult = if upsample_first_octave { 0.5 } else { 1.0 };
-    extract_extrema_with_base_multiplier(&dog_space, threshold, base_mult)
+    let pyramid = Pyramid::build_with_params(img, octaves, scales, upsample_first_octave);
+    pyramid.extract_extrema(threshold)
 }
 
 /// Convenience end-to-end pipeline execution: generates the DoG scale-space pyramid
@@ -1054,7 +1120,7 @@ impl OctaveGradientPlanes {
 }
 
 #[inline]
-fn resolve_octave_and_layer(kp: &Keypoint, pyramid: &[ScaleSpaceOctave]) -> (usize, usize) {
+fn resolve_octave_and_layer(kp: &Keypoint, pyramid: &[Octave]) -> (usize, usize) {
     if pyramid.is_empty() {
         return (0, 0);
     }
@@ -1331,7 +1397,7 @@ fn compute_128d_descriptor(
 }
 
 fn compute_sift_descriptors_from_pyramid_with_kind(
-    pyramid: &[ScaleSpaceOctave],
+    pyramid: &[Octave],
     keypoints: &[Keypoint],
     kind: DescriptorKind,
 ) -> Vec<SiftFeature> {
@@ -1366,7 +1432,7 @@ fn compute_sift_descriptors_from_pyramid_with_kind(
                 .find(|p| p.octave == oct && p.layer == layer)
                 .expect("octave/layer gradient plane was pre-indexed");
 
-            let oct_mult = pyramid[oct].octave_multiplier;
+            let oct_mult = pyramid[oct].scale_factor;
             let inv_oct_mult = 1.0 / oct_mult;
             let oct_kp = Keypoint {
                 x: kp.x * inv_oct_mult,
@@ -1474,14 +1540,8 @@ pub fn extract_sift_features_with_kind(
     upsample_first_octave: bool,
     kind: DescriptorKind,
 ) -> Vec<SiftFeature> {
-    let pyramid =
-        build_scale_space_pyramid_with_options(img, octaves, scales, upsample_first_octave);
-    let dog_space: Vec<Array2<f32>> = pyramid
-        .iter()
-        .flat_map(|oct| oct.dogs.iter().cloned())
-        .collect();
-    let base_mult = if upsample_first_octave { 0.5 } else { 1.0 };
-    let mut keypoints = extract_extrema_with_base_multiplier(&dog_space, threshold, base_mult);
+    let pyramid = Pyramid::build_with_params(img, octaves, scales, upsample_first_octave);
+    let mut keypoints = pyramid.extract_extrema(threshold);
     if keypoints.len() > MAX_FEATURES_PER_IMAGE {
         keypoints.sort_by(|a, b| {
             b.response
@@ -1491,7 +1551,8 @@ pub fn extract_sift_features_with_kind(
         });
         keypoints.truncate(MAX_FEATURES_PER_IMAGE);
     }
-    let mut features = compute_sift_descriptors_from_pyramid_with_kind(&pyramid, &keypoints, kind);
+    let mut features =
+        compute_sift_descriptors_from_pyramid_with_kind(&pyramid.octaves, &keypoints, kind);
     if features.len() > MAX_FEATURES_PER_IMAGE {
         features.truncate(MAX_FEATURES_PER_IMAGE);
     }
