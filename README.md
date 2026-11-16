@@ -73,6 +73,10 @@ cargo run --release -- serve --bind 127.0.0.1:3000
 # Open http://127.0.0.1:3000/ in your browser
 ```
 
+**Threat Model (Local Tool vs. Exposed Service):**
+- By default, `pure-sift serve` binds strictly to loopback (`127.0.0.1:3000`) for local single-user use.
+- If exposing the server beyond localhost (`--bind 0.0.0.0:3000` or `BIND_ADDR`), set `API_TOKEN=<secret>` to require `Authorization: Bearer <secret>` on all `/api/*` endpoints, place it behind a TLS-terminating reverse proxy, and tune `MAX_BODY_MB` (default `16`), `MAX_CONCURRENT_JOBS` (default `4`), and `REQUEST_TIMEOUT_SECS` (default `30`).
+
 ### Use as a CLI Tool
 ```bash
 # Build release binary

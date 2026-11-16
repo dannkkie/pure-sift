@@ -637,12 +637,14 @@ USAGE:
   pure-sift serve [OPTIONS]
 
 OPTIONS:
-  -b, --bind <ADDR>             Address to bind (overrides BIND_ADDR; default: 0.0.0.0:3000)
+  -b, --bind <ADDR>             Address to bind (overrides BIND_ADDR; default: 127.0.0.1:3000)
   -h, --help                    Print help information
 
 ENVIRONMENT VARIABLES:
-  BIND_ADDR                     TCP listen address (default: 0.0.0.0:3000)
+  BIND_ADDR                     TCP listen address (default: 127.0.0.1:3000)
+  API_TOKEN                     Optional bearer token required on /api/* endpoints
   MAX_BODY_MB                   Multipart upload limit in MiB (default: 16)
+  MAX_CONCURRENT_JOBS           Max concurrent vision jobs (default: 4)
   REQUEST_TIMEOUT_SECS          Per-request timeout in seconds (default: 30)
 ",
         ),
