@@ -1526,8 +1526,70 @@ fn fit_procrustes_similarity(inliers: &[FeatureMatch]) -> Option<SimilarityTrans
     })
 }
 
+/// Computes the adaptive RANSAC iteration budget `ceil(ln(1 - confidence) / ln(1 - w^sample_size))`
+/// clamped to `[min_iters, max_cap]`.
+#[inline]
+fn adaptive_ransac_iters(
+    inlier_count: usize,
+    total_count: usize,
+    sample_size: i32,
+    confidence: f64,
+    min_iters: usize,
+    max_cap: usize,
+) -> usize {
+    if total_count == 0 || inlier_count == 0 {
+        return max_cap;
+    }
+    let w = ((inlier_count as f64) / (total_count as f64)).clamp(1e-3, 1.0 - 1e-6);
+    let p_inlier_sample = w.powi(sample_size).clamp(1e-12, 1.0 - 1e-9);
+    let num = (1.0 - confidence).ln();
+    let den = (1.0 - p_inlier_sample).ln();
+    if den.abs() < 1e-12 {
+        return min_iters;
+    }
+    let est = (num / den).ceil();
+    if !est.is_finite() {
+        return max_cap;
+    }
+    (est as usize).clamp(min_iters, max_cap)
+}
+
+/// Builds a normalized cumulative distribution function (CDF) over `matches` weighted by
+/// `1 / ratio.max(0.05)` so all matches can be sampled while prioritizing high-confidence ones.
+fn build_ratio_weighted_cdf(matches: &[FeatureMatch]) -> Vec<f64> {
+    let mut cdf = Vec::with_capacity(matches.len());
+    let mut acc = 0.0f64;
+    for m in matches {
+        let r = if m.ratio.is_finite() {
+            (m.ratio as f64).clamp(0.05, 1.0)
+        } else {
+            1.0
+        };
+        acc += 1.0 / r;
+        cdf.push(acc);
+    }
+    if acc > 0.0 {
+        let inv = 1.0 / acc;
+        for v in &mut cdf {
+            *v *= inv;
+        }
+    }
+    if let Some(last) = cdf.last_mut() {
+        *last = 1.0;
+    }
+    cdf
+}
+
+#[inline]
+fn sample_weighted_index(cdf: &[f64], rng_state: &mut u64) -> usize {
+    // Map u64 to [0, 1)
+    let u = ((splitmix64_next(rng_state) >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
+    cdf.partition_point(|&c| c < u)
+        .min(cdf.len().saturating_sub(1))
+}
+
 /// Filters raw SIFT correspondences using deterministic 2D Similarity RANSAC
-/// (translation + rotation + uniform scale) followed by Orthogonal Procrustes refinement.
+/// (translation + rotation + uniform scale) with adaptive termination and Orthogonal Procrustes refinement.
 ///
 /// Returns `(inlier_matches, best_similarity_transform)`.
 pub fn filter_matches_ransac(
@@ -1545,7 +1607,7 @@ pub fn filter_matches_ransac(
     let thresh = reproj_threshold.max(0.5);
     let thresh_sq = thresh * thresh;
 
-    // Prioritize highest-confidence matches (lowest Lowe ambiguity ratio) when proposing hypotheses
+    // Prioritize highest-confidence matches (lowest Lowe ambiguity ratio) for 1-point translation seeds
     let mut sorted_indices: Vec<usize> = (0..matches.len()).collect();
     sorted_indices.sort_by(|&i, &j| {
         matches[i]
@@ -1580,20 +1642,25 @@ pub fn filter_matches_ransac(
         }
     }
 
-    // Phase B: Evaluate up to 256 deterministic 2-point similarity (scale + rotation + translation) hypotheses
-    let pool_len = sorted_indices.len().min(128);
+    // Phase B: Adaptive ratio-weighted 2-point similarity hypotheses across all matches
+    let cdf = build_ratio_weighted_cdf(matches);
     let mut rng_state = 0xD1B5_4A32_D192_ED03u64;
-    let max_iters = 256usize;
+    let hard_cap = 1000usize;
+    let min_iters = 64usize;
+    let mut max_iters =
+        adaptive_ransac_iters(best_count, matches.len(), 2, 0.999, min_iters, hard_cap);
+    let mut iter = 0usize;
 
-    for _ in 0..max_iters {
-        let i1 = (splitmix64_next(&mut rng_state) as usize) % pool_len;
-        let mut i2 = (splitmix64_next(&mut rng_state) as usize) % (pool_len - 1);
-        if i2 >= i1 {
-            i2 += 1;
+    while iter < max_iters {
+        iter += 1;
+        let i1 = sample_weighted_index(&cdf, &mut rng_state);
+        let mut i2 = sample_weighted_index(&cdf, &mut rng_state);
+        if i2 == i1 {
+            i2 = (i1 + 1) % matches.len();
         }
 
-        let m1 = &matches[sorted_indices[i1]];
-        let m2 = &matches[sorted_indices[i2]];
+        let m1 = &matches[i1];
+        let m2 = &matches[i2];
 
         let dx_q = m2.query_point.0 - m1.query_point.0;
         let dy_q = m2.query_point.1 - m1.query_point.1;
@@ -1620,6 +1687,8 @@ pub fn filter_matches_ransac(
             best_count = count;
             best_err_sq = err_sq;
             best_model = (a, b, tx, ty);
+            max_iters =
+                adaptive_ransac_iters(best_count, matches.len(), 2, 0.999, min_iters, hard_cap);
         }
     }
 
@@ -1741,58 +1810,141 @@ pub fn summarize_tracking(
     }
 }
 
-/// Solves an 8x8 linear system `A * x = b` in `f64` using Gaussian elimination with partial pivoting.
-fn solve_linear_8x8(mut a: [[f64; 8]; 8], mut b: [f64; 8]) -> Option<[f64; 8]> {
-    for col in 0..8 {
-        let mut pivot_row = col;
-        let mut max_abs = a[col][col].abs();
-        for (row, a_row) in a.iter().enumerate().skip(col + 1) {
-            let v = a_row[col].abs();
-            if v > max_abs {
-                max_abs = v;
-                pivot_row = row;
-            }
-        }
-        if max_abs < 1e-11 {
-            return None;
-        }
-        if pivot_row != col {
-            a.swap(col, pivot_row);
-            b.swap(col, pivot_row);
-        }
+/// Finds the unit eigenvector corresponding to the smallest eigenvalue of a symmetric
+/// 9x9 matrix `ata = A^T A` using cyclic Jacobi rotations in `f64`.
+fn smallest_eigenvector_9x9(mut a: [[f64; 9]; 9]) -> Option<[f64; 9]> {
+    let mut v = [[0.0f64; 9]; 9];
+    for (i, row) in v.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
 
-        let pivot = a[col][col];
-        for row in (col + 1)..8 {
-            let factor = a[row][col] / pivot;
-            if factor.abs() > 0.0 {
-                a[row][col] = 0.0;
-                let (row_col_slice, row_below_slice) = a.split_at_mut(row);
-                for (k, cell) in row_below_slice[0].iter_mut().enumerate().skip(col + 1) {
-                    *cell -= factor * row_col_slice[col][k];
+    for _sweep in 0..20 {
+        let mut max_off = 0.0f64;
+        for (p, row_p) in a.iter().enumerate() {
+            for &val in row_p.iter().skip(p + 1) {
+                let abs_v = val.abs();
+                if abs_v > max_off {
+                    max_off = abs_v;
                 }
-                b[row] -= factor * b[col];
+            }
+        }
+        if max_off < 1e-13 {
+            break;
+        }
+
+        for p in 0..8 {
+            for q in (p + 1)..9 {
+                let apq = a[p][q];
+                if apq.abs() < 1e-15 {
+                    continue;
+                }
+                let app = a[p][p];
+                let aqq = a[q][q];
+                let tau = (aqq - app) / (2.0 * apq);
+                let t = if tau >= 0.0 {
+                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                } else {
+                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = t * c;
+
+                a[p][p] = app - t * apq;
+                a[q][q] = aqq + t * apq;
+                a[p][q] = 0.0;
+                a[q][p] = 0.0;
+
+                for r in 0..9 {
+                    if r != p && r != q {
+                        let arp = a[r][p];
+                        let arq = a[r][q];
+                        a[r][p] = c * arp - s * arq;
+                        a[p][r] = a[r][p];
+                        a[r][q] = s * arp + c * arq;
+                        a[q][r] = a[r][q];
+                    }
+                    let vrp = v[r][p];
+                    let vrq = v[r][q];
+                    v[r][p] = c * vrp - s * vrq;
+                    v[r][q] = s * vrp + c * vrq;
+                }
             }
         }
     }
 
-    let mut x = [0.0f64; 8];
-    for row in (0..8).rev() {
-        let mut sum = b[row];
-        for (k, &xk) in x.iter().enumerate().skip(row + 1) {
-            sum -= a[row][k] * xk;
+    let mut min_idx = 0usize;
+    let mut min_eig = a[0][0];
+    for (i, row) in a.iter().enumerate().skip(1) {
+        if row[i] < min_eig {
+            min_eig = row[i];
+            min_idx = i;
         }
-        let diag = a[row][row];
-        if diag.abs() < 1e-11 {
+    }
+
+    let mut h = [0.0f64; 9];
+    for r in 0..9 {
+        h[r] = v[r][min_idx];
+        if !h[r].is_finite() {
             return None;
         }
-        x[row] = sum / diag;
     }
-    Some(x)
+    Some(h)
 }
 
-/// Fits a 3x3 planar perspective homography `H` over `sample` correspondences (len >= 4)
-/// using Hartley isotropic coordinate normalization and Normalized DLT normal equations.
-pub fn fit_homography_dlt(sample: &[FeatureMatch]) -> Option<Homography2D> {
+/// Checks whether 4 points contain any near-collinear triplet or span a degenerate tiny area.
+#[inline]
+fn has_degenerate_triangle(pts: [(f64, f64); 4]) -> bool {
+    const TRIPLETS: [(usize, usize, usize); 4] = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)];
+    for (i, j, k) in TRIPLETS {
+        let (xi, yi) = pts[i];
+        let (xj, yj) = pts[j];
+        let (xk, yk) = pts[k];
+        if !xi.is_finite()
+            || !yi.is_finite()
+            || !xj.is_finite()
+            || !yj.is_finite()
+            || !xk.is_finite()
+            || !yk.is_finite()
+        {
+            return true;
+        }
+        let dx1 = xj - xi;
+        let dy1 = yj - yi;
+        let dx2 = xk - xi;
+        let dy2 = yk - yi;
+        let dx3 = xk - xj;
+        let dy3 = yk - yj;
+        let cross = (dx1 * dy2 - dy1 * dx2).abs();
+        let max_edge_sq = (dx1 * dx1 + dy1 * dy1)
+            .max(dx2 * dx2 + dy2 * dy2)
+            .max(dx3 * dx3 + dy3 * dy3);
+        if cross < 4.0 || cross < 1e-3 * max_edge_sq {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline]
+fn is_degenerate_quad(quad: &[FeatureMatch; 4]) -> bool {
+    let q_pts = [
+        (quad[0].query_point.0 as f64, quad[0].query_point.1 as f64),
+        (quad[1].query_point.0 as f64, quad[1].query_point.1 as f64),
+        (quad[2].query_point.0 as f64, quad[2].query_point.1 as f64),
+        (quad[3].query_point.0 as f64, quad[3].query_point.1 as f64),
+    ];
+    let t_pts = [
+        (quad[0].target_point.0 as f64, quad[0].target_point.1 as f64),
+        (quad[1].target_point.0 as f64, quad[1].target_point.1 as f64),
+        (quad[2].target_point.0 as f64, quad[2].target_point.1 as f64),
+        (quad[3].target_point.0 as f64, quad[3].target_point.1 as f64),
+    ];
+    has_degenerate_triangle(q_pts) || has_degenerate_triangle(t_pts)
+}
+
+/// Internal `f64` homography fit via Hartley isotropic normalization and 9x9 Jacobi null-space DLT
+/// (solving `A h = 0` without assuming `h33 = 1`).
+fn fit_homography_dlt_f64(sample: &[FeatureMatch]) -> Option<[[f64; 3]; 3]> {
     if sample.len() < 4 {
         return None;
     }
@@ -1804,10 +1956,17 @@ pub fn fit_homography_dlt(sample: &[FeatureMatch]) -> Option<Homography2D> {
     let mut cy_t = 0.0f64;
 
     for m in sample {
-        cx_q += m.query_point.0 as f64;
-        cy_q += m.query_point.1 as f64;
-        cx_t += m.target_point.0 as f64;
-        cy_t += m.target_point.1 as f64;
+        let qx = m.query_point.0 as f64;
+        let qy = m.query_point.1 as f64;
+        let tx = m.target_point.0 as f64;
+        let ty = m.target_point.1 as f64;
+        if !qx.is_finite() || !qy.is_finite() || !tx.is_finite() || !ty.is_finite() {
+            return None;
+        }
+        cx_q += qx;
+        cy_q += qy;
+        cx_t += tx;
+        cy_t += ty;
     }
     cx_q *= inv_n;
     cy_q *= inv_n;
@@ -1827,43 +1986,46 @@ pub fn fit_homography_dlt(sample: &[FeatureMatch]) -> Option<Homography2D> {
     mean_dist_q *= inv_n;
     mean_dist_t *= inv_n;
 
-    if mean_dist_q < 1e-6 || mean_dist_t < 1e-6 {
+    if !mean_dist_q.is_finite()
+        || !mean_dist_t.is_finite()
+        || mean_dist_q < 1e-6
+        || mean_dist_t < 1e-6
+    {
         return None;
     }
 
     let scale_q = std::f64::consts::SQRT_2 / mean_dist_q;
     let scale_t = std::f64::consts::SQRT_2 / mean_dist_t;
 
-    let mut ata = [[0.0f64; 8]; 8];
-    let mut atb = [0.0f64; 8];
-
+    let mut ata = [[0.0f64; 9]; 9];
     for m in sample {
         let x = ((m.query_point.0 as f64) - cx_q) * scale_q;
         let y = ((m.query_point.1 as f64) - cy_q) * scale_q;
         let xp = ((m.target_point.0 as f64) - cx_t) * scale_t;
         let yp = ((m.target_point.1 as f64) - cy_t) * scale_t;
 
-        let r1 = [x, y, 1.0, 0.0, 0.0, 0.0, -x * xp, -y * xp];
-        let r2 = [0.0, 0.0, 0.0, x, y, 1.0, -x * yp, -y * yp];
+        let r1 = [-x, -y, -1.0, 0.0, 0.0, 0.0, x * xp, y * xp, xp];
+        let r2 = [0.0, 0.0, 0.0, -x, -y, -1.0, x * yp, y * yp, yp];
 
-        for i in 0..8 {
-            atb[i] += r1[i] * xp + r2[i] * yp;
-            for j in 0..8 {
+        for i in 0..9 {
+            for j in i..9 {
                 ata[i][j] += r1[i] * r1[j] + r2[i] * r2[j];
             }
         }
     }
+    for i in 0..9 {
+        for j in 0..i {
+            ata[i][j] = ata[j][i];
+        }
+    }
 
-    let h_norm = solve_linear_8x8(ata, atb)?;
+    let h_vec = smallest_eigenvector_9x9(ata)?;
     let hn = [
-        [h_norm[0], h_norm[1], h_norm[2]],
-        [h_norm[3], h_norm[4], h_norm[5]],
-        [h_norm[6], h_norm[7], 1.0],
+        [h_vec[0], h_vec[1], h_vec[2]],
+        [h_vec[3], h_vec[4], h_vec[5]],
+        [h_vec[6], h_vec[7], h_vec[8]],
     ];
 
-    // Denormalize: H = T_t^{-1} * H_norm * T_q
-    // where T_q = [[scale_q, 0, -scale_q * cx_q], [0, scale_q, -scale_q * cy_q], [0, 0, 1]]
-    // and T_t^{-1} = [[1/scale_t, 0, cx_t], [0, 1/scale_t, cy_t], [0, 0, 1]]
     let t_q = [
         [scale_q, 0.0, -scale_q * cx_q],
         [0.0, scale_q, -scale_q * cy_q],
@@ -1892,57 +2054,123 @@ pub fn fit_homography_dlt(sample: &[FeatureMatch]) -> Option<Homography2D> {
         }
     }
 
-    if h_raw[2][2].abs() < 1e-9 {
-        return None;
+    if h_raw[2][2].abs() > 1e-12 {
+        let inv_h22 = 1.0 / h_raw[2][2];
+        for row in &mut h_raw {
+            for val in row.iter_mut() {
+                *val *= inv_h22;
+            }
+        }
     }
-    let inv_h22 = 1.0 / h_raw[2][2];
-    let matrix = [
-        [
-            (h_raw[0][0] * inv_h22) as f32,
-            (h_raw[0][1] * inv_h22) as f32,
-            (h_raw[0][2] * inv_h22) as f32,
-        ],
-        [
-            (h_raw[1][0] * inv_h22) as f32,
-            (h_raw[1][1] * inv_h22) as f32,
-            (h_raw[1][2] * inv_h22) as f32,
-        ],
-        [
-            (h_raw[2][0] * inv_h22) as f32,
-            (h_raw[2][1] * inv_h22) as f32,
-            1.0f32,
-        ],
-    ];
 
-    Some(Homography2D { matrix })
+    Some(h_raw)
 }
 
-/// Evaluates how many matches agree with `homography` within `thresh_sq`.
 #[inline]
-fn evaluate_homography_hypothesis(
+fn h64_to_homography2d(h: &[[f64; 3]; 3]) -> Homography2D {
+    Homography2D {
+        matrix: [
+            [h[0][0] as f32, h[0][1] as f32, h[0][2] as f32],
+            [h[1][0] as f32, h[1][1] as f32, h[1][2] as f32],
+            [h[2][0] as f32, h[2][1] as f32, h[2][2] as f32],
+        ],
+    }
+}
+
+/// Fits a 3x3 planar perspective homography `H` over `sample` correspondences (len >= 4)
+/// using Hartley isotropic coordinate normalization and Jacobi SVD/null-space DLT.
+pub fn fit_homography_dlt(sample: &[FeatureMatch]) -> Option<Homography2D> {
+    fit_homography_dlt_f64(sample).map(|h| h64_to_homography2d(&h))
+}
+
+/// Evaluates how many matches agree with an `f64` homography within `thresh_sq`,
+/// returning `(inlier_count, total_inlier_error_sq)`.
+#[inline]
+fn evaluate_homography_hypothesis_f64(
     matches: &[FeatureMatch],
-    homography: &Homography2D,
-    thresh_sq: f32,
-) -> (usize, f32) {
+    h: &[[f64; 3]; 3],
+    thresh_sq: f64,
+) -> (usize, f64) {
     let mut count = 0usize;
-    let mut err_sum = 0.0f32;
+    let mut err_sum = 0.0f64;
     for m in matches {
-        if let Some((px, py)) = homography.project(m.query_point.0, m.query_point.1) {
-            let dx = px - m.target_point.0;
-            let dy = py - m.target_point.1;
-            let err_sq = dx * dx + dy * dy;
-            if err_sq <= thresh_sq {
-                count += 1;
-                err_sum += err_sq;
-            }
+        let qx = m.query_point.0 as f64;
+        let qy = m.query_point.1 as f64;
+        let w = h[2][0] * qx + h[2][1] * qy + h[2][2];
+        if w.abs() < 1e-9 {
+            continue;
+        }
+        let inv_w = 1.0 / w;
+        let px = (h[0][0] * qx + h[0][1] * qy + h[0][2]) * inv_w;
+        let py = (h[1][0] * qx + h[1][1] * qy + h[1][2]) * inv_w;
+        let dx = px - (m.target_point.0 as f64);
+        let dy = py - (m.target_point.1 as f64);
+        let err_sq = dx * dx + dy * dy;
+        if err_sq <= thresh_sq {
+            count += 1;
+            err_sum += err_sq;
         }
     }
     (count, err_sum)
 }
 
-/// Estimates a 3x3 2D projective Homography (`Homography2D`) using deterministic 4-point
-/// Normalized DLT RANSAC, handling full 3D planar perspective tilt in addition to translation,
-/// rotation, and scale.
+fn collect_homography_inliers_f64(
+    matches: &[FeatureMatch],
+    h: &[[f64; 3]; 3],
+    thresh_sq: f64,
+) -> Vec<FeatureMatch> {
+    matches
+        .iter()
+        .copied()
+        .filter(|m| {
+            let qx = m.query_point.0 as f64;
+            let qy = m.query_point.1 as f64;
+            let w = h[2][0] * qx + h[2][1] * qy + h[2][2];
+            if w.abs() < 1e-9 {
+                return false;
+            }
+            let inv_w = 1.0 / w;
+            let px = (h[0][0] * qx + h[0][1] * qy + h[0][2]) * inv_w;
+            let py = (h[1][0] * qx + h[1][1] * qy + h[1][2]) * inv_w;
+            let dx = px - (m.target_point.0 as f64);
+            let dy = py - (m.target_point.1 as f64);
+            dx * dx + dy * dy <= thresh_sq
+        })
+        .collect()
+}
+
+/// Local optimization (LO-RANSAC) step: refines `h` via iterated least-squares DLT on its
+/// consensus set, returning the improved `(h, count, err_sq)` if any improvement is found.
+fn local_optimize_homography(
+    matches: &[FeatureMatch],
+    mut best_h: [[f64; 3]; 3],
+    mut best_count: usize,
+    mut best_err_sq: f64,
+    thresh_sq: f64,
+) -> ([[f64; 3]; 3], usize, f64) {
+    for _ in 0..2 {
+        let inliers = collect_homography_inliers_f64(matches, &best_h, thresh_sq);
+        if inliers.len() < 4 {
+            break;
+        }
+        let Some(ref_h) = fit_homography_dlt_f64(&inliers) else {
+            break;
+        };
+        let (ref_count, ref_err) = evaluate_homography_hypothesis_f64(matches, &ref_h, thresh_sq);
+        if ref_count > best_count || (ref_count == best_count && ref_err < best_err_sq) {
+            best_h = ref_h;
+            best_count = ref_count;
+            best_err_sq = ref_err;
+        } else {
+            break;
+        }
+    }
+    (best_h, best_count, best_err_sq)
+}
+
+/// Estimates a 3x3 2D projective Homography (`Homography2D`) using deterministic LO-RANSAC
+/// with adaptive termination, ratio-weighted sampling across all matches, collinearity/area
+/// degeneracy filtering, and `f64` Jacobi null-space Normalized DLT.
 pub fn estimate_homography_ransac(
     matches: &[FeatureMatch],
     reproj_threshold: f32,
@@ -1951,44 +2179,45 @@ pub fn estimate_homography_ransac(
         return (Vec::new(), None);
     }
 
-    let thresh = reproj_threshold.max(0.5);
+    let thresh = (reproj_threshold.max(0.5)) as f64;
     let thresh_sq = thresh * thresh;
 
     // Seed initial candidate with the 2D similarity RANSAC model promoted to 3x3 homography
     let (sim_inliers, sim_opt) = filter_matches_ransac(matches, reproj_threshold);
-    let mut best_h = sim_opt.map(|s| Homography2D {
-        matrix: [[s.a, -s.b, s.tx], [s.b, s.a, s.ty], [0.0, 0.0, 1.0]],
+    let mut best_h: Option<[[f64; 3]; 3]> = sim_opt.map(|s| {
+        [
+            [s.a as f64, -(s.b as f64), s.tx as f64],
+            [s.b as f64, s.a as f64, s.ty as f64],
+            [0.0, 0.0, 1.0],
+        ]
     });
     let (mut best_count, mut best_err_sq) = if let Some(ref h) = best_h {
-        evaluate_homography_hypothesis(matches, h, thresh_sq)
+        evaluate_homography_hypothesis_f64(matches, h, thresh_sq)
     } else {
-        (0usize, f32::INFINITY)
+        (0usize, f64::INFINITY)
     };
 
     if matches.len() < 4 {
-        return (sim_inliers, best_h);
+        return (sim_inliers, best_h.map(|h| h64_to_homography2d(&h)));
     }
 
-    let mut sorted_indices: Vec<usize> = (0..matches.len()).collect();
-    sorted_indices.sort_by(|&i, &j| {
-        matches[i]
-            .ratio
-            .partial_cmp(&matches[j].ratio)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let pool_len = sorted_indices.len().min(128);
+    let cdf = build_ratio_weighted_cdf(matches);
     let mut rng_state = 0x517C_C1B7_2722_0A95u64;
-    let max_iters = 200usize;
+    let hard_cap = 2000usize;
+    let min_iters = 64usize;
+    let mut max_iters =
+        adaptive_ransac_iters(best_count, matches.len(), 4, 0.999, min_iters, hard_cap);
+    let mut iter = 0usize;
 
-    for _ in 0..max_iters {
-        // Sample 4 distinct indices from the highest-confidence pool
+    while iter < max_iters {
+        iter += 1;
+        // Sample 4 distinct indices from all matches weighted by 1/ratio
         let mut sample_idx = [0usize; 4];
         let mut chosen = 0usize;
         let mut attempts = 0usize;
         while chosen < 4 && attempts < 16 {
             attempts += 1;
-            let cand = (splitmix64_next(&mut rng_state) as usize) % pool_len;
+            let cand = sample_weighted_index(&cdf, &mut rng_state);
             if !sample_idx[..chosen].contains(&cand) {
                 sample_idx[chosen] = cand;
                 chosen += 1;
@@ -1999,64 +2228,36 @@ pub fn estimate_homography_ransac(
         }
 
         let quad = [
-            matches[sorted_indices[sample_idx[0]]],
-            matches[sorted_indices[sample_idx[1]]],
-            matches[sorted_indices[sample_idx[2]]],
-            matches[sorted_indices[sample_idx[3]]],
+            matches[sample_idx[0]],
+            matches[sample_idx[1]],
+            matches[sample_idx[2]],
+            matches[sample_idx[3]],
         ];
 
-        if let Some(h_cand) = fit_homography_dlt(&quad) {
-            let (count, err_sq) = evaluate_homography_hypothesis(matches, &h_cand, thresh_sq);
+        if is_degenerate_quad(&quad) {
+            continue;
+        }
+
+        if let Some(h_cand) = fit_homography_dlt_f64(&quad) {
+            let (count, err_sq) = evaluate_homography_hypothesis_f64(matches, &h_cand, thresh_sq);
             if count > best_count || (count == best_count && err_sq < best_err_sq) {
-                best_count = count;
-                best_err_sq = err_sq;
-                best_h = Some(h_cand);
+                let (lo_h, lo_count, lo_err) =
+                    local_optimize_homography(matches, h_cand, count, err_sq, thresh_sq);
+                best_count = lo_count;
+                best_err_sq = lo_err;
+                best_h = Some(lo_h);
+                max_iters =
+                    adaptive_ransac_iters(best_count, matches.len(), 4, 0.999, min_iters, hard_cap);
             }
         }
     }
 
-    let Some(initial_h) = best_h else {
+    let Some(final_h) = best_h else {
         return (sim_inliers, None);
     };
 
-    let mut inliers: Vec<FeatureMatch> = matches
-        .iter()
-        .copied()
-        .filter(|m| {
-            initial_h
-                .project(m.query_point.0, m.query_point.1)
-                .map(|(px, py)| {
-                    let dx = px - m.target_point.0;
-                    let dy = py - m.target_point.1;
-                    dx * dx + dy * dy <= thresh_sq
-                })
-                .unwrap_or(false)
-        })
-        .collect();
-
-    // Least-squares DLT refinement over all consensus inliers
-    if inliers.len() >= 4
-        && let Some(refined_h) = fit_homography_dlt(&inliers)
-    {
-        let (ref_count, ref_err) = evaluate_homography_hypothesis(matches, &refined_h, thresh_sq);
-        if ref_count >= inliers.len() || (ref_count == best_count && ref_err <= best_err_sq) {
-            inliers = matches
-                .iter()
-                .copied()
-                .filter(|m| {
-                    refined_h
-                        .project(m.query_point.0, m.query_point.1)
-                        .map(|(px, py)| {
-                            let dx = px - m.target_point.0;
-                            let dy = py - m.target_point.1;
-                            dx * dx + dy * dy <= thresh_sq
-                        })
-                        .unwrap_or(false)
-                })
-                .collect();
-            return (inliers, Some(refined_h));
-        }
-    }
-
-    (inliers, Some(initial_h))
+    let (opt_h, _, _) =
+        local_optimize_homography(matches, final_h, best_count, best_err_sq, thresh_sq);
+    let inliers = collect_homography_inliers_f64(matches, &opt_h, thresh_sq);
+    (inliers, Some(h64_to_homography2d(&opt_h)))
 }
