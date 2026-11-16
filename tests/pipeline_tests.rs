@@ -14,12 +14,12 @@ use pure_sift::{
     },
     pipeline::{
         BASE_SIGMA, DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO,
-        DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch, Homography2D, SIFT_DESCRIPTOR_LEN,
-        SiftFeature, SimilarityTransform2D, detect_keypoints, detect_keypoints_with_options,
-        estimate_homography_ransac, extract_extrema, extract_sift_features,
-        extract_sift_features_with_options, filter_matches_ransac, gaussian_blur,
-        gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, luma_to_array2,
-        match_descriptors, summarize_tracking,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch, Homography2D, MatchOptions,
+        SIFT_DESCRIPTOR_LEN, SiftFeature, SimilarityTransform2D, detect_keypoints,
+        detect_keypoints_with_options, estimate_homography_ransac, extract_extrema,
+        extract_sift_features, extract_sift_features_with_options, filter_matches_ransac,
+        gaussian_blur, gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, luma_to_array2,
+        match_descriptors, match_descriptors_with_options, summarize_tracking,
     },
     visualize::{is_sane_homography_for_dims, resolve_safe_alignment_homography},
 };
@@ -1211,4 +1211,65 @@ fn test_upsampled_first_octave_coordinate_consistency_and_gain() {
         CliCommand::Extract(args) => assert!(!args.upsample_first_octave),
         other => panic!("Expected Extract, got {other:?}"),
     }
+}
+
+#[test]
+fn test_mutual_nearest_neighbor_removes_many_to_one_false_match() {
+    let make_desc = |v0: f32, v1: f32| {
+        let mut d = vec![0.0f32; SIFT_DESCRIPTOR_LEN];
+        d[0] = v0;
+        d[1] = v1;
+        let norm = (v0 * v0 + v1 * v1).sqrt();
+        d[0] /= norm;
+        d[1] /= norm;
+        d
+    };
+    let make_feat = |x: f32, desc: Vec<f32>| SiftFeature {
+        x,
+        y: 10.0,
+        scale: 1.6,
+        response: 0.05,
+        orientation: 0.0,
+        descriptor: desc,
+    };
+
+    // q0 is an exact match for t0; q1 is slightly perturbed toward t0 and still passes
+    // one-way ratio against distant distractor t1, creating a many-to-one false match.
+    let q0 = make_feat(10.0, make_desc(1.0, 0.0));
+    let q1 = make_feat(20.0, make_desc(0.95, 0.31));
+    let t0 = make_feat(12.0, make_desc(1.0, 0.0));
+    let t1 = make_feat(80.0, make_desc(0.0, 1.0));
+
+    let query = [q0, q1];
+    let target = [t0, t1];
+
+    let one_way = match_descriptors_with_options(
+        &query,
+        &target,
+        MatchOptions {
+            ratio: 0.75,
+            mutual: false,
+        },
+    );
+    assert_eq!(
+        one_way.len(),
+        2,
+        "One-way ratio test should accept both q0->t0 and q1->t0"
+    );
+
+    let mutual = match_descriptors_with_options(
+        &query,
+        &target,
+        MatchOptions {
+            ratio: 0.75,
+            mutual: true,
+        },
+    );
+    assert_eq!(
+        mutual.len(),
+        1,
+        "Mutual check must drop the many-to-one false match q1->t0"
+    );
+    assert_eq!(mutual[0].query_index, 0);
+    assert_eq!(mutual[0].target_index, 0);
 }

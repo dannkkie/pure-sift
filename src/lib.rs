@@ -23,13 +23,14 @@ pub use cli::{
 pub use pipeline::{
     ASSUMED_INPUT_SIGMA, BASE_SIGMA, DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO,
     DEFAULT_RANSAC_REPROJ_THRESHOLD, DEFAULT_UPSAMPLE_FIRST_OCTAVE, FeatureMatch, Homography2D,
-    Keypoint, MAX_FEATURES_PER_IMAGE, SIFT_DESCRIPTOR_LEN, SiftFeature, SimilarityTransform2D,
-    TrackingSummary, compute_sift_descriptors, detect_keypoints, detect_keypoints_with_options,
-    downsample_2x, estimate_homography_ransac, extract_extrema,
+    Keypoint, MAX_FEATURES_PER_IMAGE, MatchOptions, SIFT_DESCRIPTOR_LEN, SiftFeature,
+    SimilarityTransform2D, TrackingSummary, compute_sift_descriptors, detect_keypoints,
+    detect_keypoints_with_options, downsample_2x, estimate_homography_ransac, extract_extrema,
     extract_extrema_with_base_multiplier, extract_sift_features,
     extract_sift_features_with_options, filter_matches_ransac, fit_homography_dlt, gaussian_blur,
     gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, generate_dog_space_with_options,
-    luma_to_array2, match_descriptors, summarize_tracking, upsample_2x_bilinear,
+    luma_to_array2, match_descriptors, match_descriptors_with_options, summarize_tracking,
+    upsample_2x_bilinear,
 };
 pub use visualize::{
     MAX_WARP_DIM, MAX_WARP_PIXELS, blend_pixel, draw_keypoints_overlay, draw_matches_side_by_side,
