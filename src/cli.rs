@@ -14,11 +14,10 @@ use crate::{
     catalog::{CatalogSearchHit, DEFAULT_CATALOG_SHORTLIST, DEFAULT_CATALOG_TOP_K, FeatureCatalog},
     pipeline::{
         DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO, DEFAULT_RANSAC_REPROJ_THRESHOLD,
-        DEFAULT_UPSAMPLE_FIRST_OCTAVE, FeatureMatch, Homography2D, Keypoint, SiftFeature,
-        SimilarityTransform2D, TrackingSummary, compute_sift_descriptors,
-        detect_keypoints_with_options, estimate_homography_ransac, extract_sift_features,
-        extract_sift_features_with_options, filter_matches_ransac, luma_to_array2,
-        match_descriptors, summarize_tracking,
+        DEFAULT_UPSAMPLE_FIRST_OCTAVE, FeatureMatch, Homography, Homography2D, Keypoint,
+        MatchOptions, Matcher, RansacOptions, Sift, SiftConfig, SiftFeature, SimilarityTransform2D,
+        TrackingSummary, compute_sift_descriptors, detect_keypoints_with_options,
+        extract_sift_features, luma_to_array2, summarize_tracking,
     },
     visualize::{
         draw_keypoints_overlay, draw_matches_side_by_side, resolve_safe_alignment_homography,
@@ -243,27 +242,51 @@ pub fn run_extract_from_bytes(
     )
 }
 
-/// Executes the two-image SIFT matching + Similarity/Homography RANSAC tracking pipeline
-/// with explicit control over `upsample_first_octave`.
-#[allow(clippy::too_many_arguments)]
-pub fn run_match_from_bytes_with_options(
+/// Configuration bundle for two-image SIFT matching, visualization, and alignment helpers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PairPipelineOptions {
+    pub sift: SiftConfig,
+    pub match_options: MatchOptions,
+    pub ransac_enabled: bool,
+    pub ransac: RansacOptions,
+    pub enforce_pixel_cap: bool,
+}
+
+impl Default for PairPipelineOptions {
+    fn default() -> Self {
+        Self {
+            sift: SiftConfig::default(),
+            match_options: MatchOptions::default(),
+            ransac_enabled: true,
+            ransac: RansacOptions::default(),
+            enforce_pixel_cap: true,
+        }
+    }
+}
+
+/// Configuration bundle for `run_catalog_search_from_bytes`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CatalogSearchOptions {
+    pub top_k: usize,
+    pub shortlist_k: usize,
+    pub ratio_threshold: f32,
+    pub ransac_threshold: f32,
+    pub enforce_pixel_cap: bool,
+}
+
+/// Executes the two-image SIFT matching + Similarity/Homography RANSAC tracking pipeline.
+pub fn run_match_from_bytes(
     query_bytes: &[u8],
     target_bytes: &[u8],
-    octaves: usize,
-    scales: usize,
-    threshold: f32,
-    ratio_threshold: f32,
-    ransac_enabled: bool,
-    ransac_threshold: f32,
-    upsample_first_octave: bool,
-    enforce_pixel_cap: bool,
+    opts: PairPipelineOptions,
 ) -> Result<MatchFeaturesResponse, VisionError> {
-    validate_pipeline_params(octaves, scales, threshold)?;
-    validate_match_params(ratio_threshold, ransac_threshold)?;
+    let sift = Sift::new(opts.sift).map_err(VisionError::InvalidInput)?;
+    let matcher = Matcher::new(opts.match_options).map_err(VisionError::InvalidInput)?;
+    opts.ransac.validate().map_err(VisionError::InvalidInput)?;
 
-    let query_img = decode_validated_luma8(query_bytes, enforce_pixel_cap)
+    let query_img = decode_validated_luma8(query_bytes, opts.enforce_pixel_cap)
         .map_err(|e| map_image_prefix("First (query) image error", e))?;
-    let target_img = decode_validated_luma8(target_bytes, enforce_pixel_cap)
+    let target_img = decode_validated_luma8(target_bytes, opts.enforce_pixel_cap)
         .map_err(|e| map_image_prefix("Second (target) image error", e))?;
 
     let query_arr = luma_to_array2(&query_img);
@@ -271,27 +294,15 @@ pub fn run_match_from_bytes_with_options(
     let (q_h, q_w) = query_arr.dim();
     let (t_h, t_w) = target_arr.dim();
 
-    let query_features = extract_sift_features_with_options(
-        &query_arr,
-        octaves,
-        scales,
-        threshold,
-        upsample_first_octave,
-    );
-    let target_features = extract_sift_features_with_options(
-        &target_arr,
-        octaves,
-        scales,
-        threshold,
-        upsample_first_octave,
-    );
+    let query_features = sift.detect_and_compute(&query_arr);
+    let target_features = sift.detect_and_compute(&target_arr);
 
-    let raw_matches = match_descriptors(&query_features, &target_features, ratio_threshold);
+    let raw_matches = matcher.match_(&query_features, &target_features);
     let tracking = summarize_tracking(&query_features, &target_features, &raw_matches);
 
-    let (matches, transform, homography) = if ransac_enabled {
-        let (sim_inliers, sim_tf) = filter_matches_ransac(&raw_matches, ransac_threshold);
-        let (hom_inliers, hom_tf) = estimate_homography_ransac(&raw_matches, ransac_threshold);
+    let (matches, transform, homography) = if opts.ransac_enabled {
+        let (sim_inliers, sim_tf) = Homography::estimate_similarity(&raw_matches, opts.ransac);
+        let (hom_inliers, hom_tf) = Homography::estimate(&raw_matches, opts.ransac);
         let best_inliers = if hom_inliers.len() > sim_inliers.len() {
             hom_inliers
         } else {
@@ -307,41 +318,14 @@ pub fn run_match_from_bytes_with_options(
         target_dimensions: (t_w, t_h),
         query_feature_count: query_features.len(),
         target_feature_count: target_features.len(),
-        ratio_threshold,
-        ransac_enabled,
-        ransac_threshold,
+        ratio_threshold: opts.match_options.ratio,
+        ransac_enabled: opts.ransac_enabled,
+        ransac_threshold: opts.ransac.reproj_threshold,
         transform,
         homography,
         tracking,
         matches,
     })
-}
-
-/// Executes the two-image SIFT matching + Similarity/Homography RANSAC tracking pipeline.
-#[allow(clippy::too_many_arguments)]
-pub fn run_match_from_bytes(
-    query_bytes: &[u8],
-    target_bytes: &[u8],
-    octaves: usize,
-    scales: usize,
-    threshold: f32,
-    ratio_threshold: f32,
-    ransac_enabled: bool,
-    ransac_threshold: f32,
-    enforce_pixel_cap: bool,
-) -> Result<MatchFeaturesResponse, VisionError> {
-    run_match_from_bytes_with_options(
-        query_bytes,
-        target_bytes,
-        octaves,
-        scales,
-        threshold,
-        ratio_threshold,
-        ransac_enabled,
-        ransac_threshold,
-        DEFAULT_UPSAMPLE_FIRST_OCTAVE,
-        enforce_pixel_cap,
-    )
 }
 
 /// Extracts SIFT features and renders keypoint scale circles + orientation ticks onto the image.
@@ -352,51 +336,51 @@ pub fn run_visualize_features_rgba(
     threshold: f32,
     enforce_pixel_cap: bool,
 ) -> Result<(RgbaImage, usize), VisionError> {
-    validate_pipeline_params(octaves, scales, threshold)?;
+    let sift = Sift::new(
+        SiftConfig::default()
+            .octaves(octaves)
+            .scales(scales)
+            .contrast_threshold(threshold),
+    )
+    .map_err(VisionError::InvalidInput)?;
 
     let dyn_img = decode_validated_dynamic_image(raw_bytes, enforce_pixel_cap)?;
     let luma = dyn_img.to_luma8();
     let arr = luma_to_array2(&luma);
 
-    let features = extract_sift_features(&arr, octaves, scales, threshold);
+    let features = sift.detect_and_compute(&arr);
     let count = features.len();
     let rendered = draw_keypoints_overlay(&dyn_img, &features);
     Ok((rendered, count))
 }
 
 /// Matches SIFT features between two images and renders a side-by-side correspondence canvas.
-#[allow(clippy::too_many_arguments)]
 pub fn run_visualize_matches_rgba(
     query_bytes: &[u8],
     target_bytes: &[u8],
-    octaves: usize,
-    scales: usize,
-    threshold: f32,
-    ratio_threshold: f32,
-    ransac_enabled: bool,
-    ransac_threshold: f32,
-    enforce_pixel_cap: bool,
+    opts: PairPipelineOptions,
 ) -> Result<(RgbaImage, usize, usize), VisionError> {
-    validate_pipeline_params(octaves, scales, threshold)?;
-    validate_match_params(ratio_threshold, ransac_threshold)?;
+    let sift = Sift::new(opts.sift).map_err(VisionError::InvalidInput)?;
+    let matcher = Matcher::new(opts.match_options).map_err(VisionError::InvalidInput)?;
+    opts.ransac.validate().map_err(VisionError::InvalidInput)?;
 
-    let query_dyn = decode_validated_dynamic_image(query_bytes, enforce_pixel_cap)
+    let query_dyn = decode_validated_dynamic_image(query_bytes, opts.enforce_pixel_cap)
         .map_err(|e| map_image_prefix("First (query) image error", e))?;
-    let target_dyn = decode_validated_dynamic_image(target_bytes, enforce_pixel_cap)
+    let target_dyn = decode_validated_dynamic_image(target_bytes, opts.enforce_pixel_cap)
         .map_err(|e| map_image_prefix("Second (target) image error", e))?;
 
     let q_arr = luma_to_array2(&query_dyn.to_luma8());
     let t_arr = luma_to_array2(&target_dyn.to_luma8());
 
-    let query_features = extract_sift_features(&q_arr, octaves, scales, threshold);
-    let target_features = extract_sift_features(&t_arr, octaves, scales, threshold);
+    let query_features = sift.detect_and_compute(&q_arr);
+    let target_features = sift.detect_and_compute(&t_arr);
 
-    let raw_matches = match_descriptors(&query_features, &target_features, ratio_threshold);
+    let raw_matches = matcher.match_(&query_features, &target_features);
     let raw_count = raw_matches.len();
 
-    let display_matches = if ransac_enabled {
-        let (sim_inliers, _) = filter_matches_ransac(&raw_matches, ransac_threshold);
-        let (hom_inliers, _) = estimate_homography_ransac(&raw_matches, ransac_threshold);
+    let display_matches = if opts.ransac_enabled {
+        let (sim_inliers, _) = Homography::estimate_similarity(&raw_matches, opts.ransac);
+        let (hom_inliers, _) = Homography::estimate(&raw_matches, opts.ransac);
         if hom_inliers.len() > sim_inliers.len() {
             hom_inliers
         } else {
@@ -413,40 +397,35 @@ pub fn run_visualize_matches_rgba(
 
 /// Matches SIFT features, estimates Homography (with Similarity fallback), and warps/stitches
 /// `query` onto `target`'s coordinate frame using bilinear inverse mapping and feather blending.
-#[allow(clippy::too_many_arguments)]
 pub fn run_align_images_rgba(
     query_bytes: &[u8],
     target_bytes: &[u8],
-    octaves: usize,
-    scales: usize,
-    threshold: f32,
-    ratio_threshold: f32,
-    ransac_threshold: f32,
-    enforce_pixel_cap: bool,
+    opts: PairPipelineOptions,
 ) -> Result<(RgbaImage, usize), VisionError> {
-    validate_pipeline_params(octaves, scales, threshold)?;
-    validate_match_params(ratio_threshold, ransac_threshold)?;
+    let sift = Sift::new(opts.sift).map_err(VisionError::InvalidInput)?;
+    let matcher = Matcher::new(opts.match_options).map_err(VisionError::InvalidInput)?;
+    opts.ransac.validate().map_err(VisionError::InvalidInput)?;
 
-    let query_dyn = decode_validated_dynamic_image(query_bytes, enforce_pixel_cap)
+    let query_dyn = decode_validated_dynamic_image(query_bytes, opts.enforce_pixel_cap)
         .map_err(|e| map_image_prefix("First (query) image error", e))?;
-    let target_dyn = decode_validated_dynamic_image(target_bytes, enforce_pixel_cap)
+    let target_dyn = decode_validated_dynamic_image(target_bytes, opts.enforce_pixel_cap)
         .map_err(|e| map_image_prefix("Second (target) image error", e))?;
 
     let q_arr = luma_to_array2(&query_dyn.to_luma8());
     let t_arr = luma_to_array2(&target_dyn.to_luma8());
 
-    let query_features = extract_sift_features(&q_arr, octaves, scales, threshold);
-    let target_features = extract_sift_features(&t_arr, octaves, scales, threshold);
+    let query_features = sift.detect_and_compute(&q_arr);
+    let target_features = sift.detect_and_compute(&t_arr);
 
-    let raw_matches = match_descriptors(&query_features, &target_features, ratio_threshold);
+    let raw_matches = matcher.match_(&query_features, &target_features);
     if raw_matches.is_empty() {
         return Err(VisionError::UnprocessableImage(
             "No SIFT descriptor matches found between query and target images".to_string(),
         ));
     }
 
-    let (sim_inliers, sim_tf) = filter_matches_ransac(&raw_matches, ransac_threshold);
-    let (hom_inliers, hom_tf) = estimate_homography_ransac(&raw_matches, ransac_threshold);
+    let (sim_inliers, sim_tf) = Homography::estimate_similarity(&raw_matches, opts.ransac);
+    let (hom_inliers, hom_tf) = Homography::estimate(&raw_matches, opts.ransac);
     let inlier_count = hom_inliers.len().max(sim_inliers.len());
     let (q_h, q_w) = q_arr.dim();
 
@@ -1576,24 +1555,19 @@ fn collect_image_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, VisionError> 
 }
 
 /// Searches a `FeatureCatalog` using raw image bytes for the query image.
-#[allow(clippy::too_many_arguments)]
 pub fn run_catalog_search_from_bytes(
     catalog: &FeatureCatalog,
     query_bytes: &[u8],
-    top_k: usize,
-    shortlist_k: usize,
-    ratio_threshold: f32,
-    ransac_threshold: f32,
-    enforce_pixel_cap: bool,
+    opts: CatalogSearchOptions,
 ) -> Result<CatalogSearchResponse, VisionError> {
-    if top_k == 0 || shortlist_k == 0 {
+    if opts.top_k == 0 || opts.shortlist_k == 0 {
         return Err(VisionError::InvalidInput(
             "`top_k` and `shortlist` must be at least 1".to_string(),
         ));
     }
-    validate_match_params(ratio_threshold, ransac_threshold)?;
+    validate_match_params(opts.ratio_threshold, opts.ransac_threshold)?;
 
-    let query_luma = decode_validated_luma8(query_bytes, enforce_pixel_cap)?;
+    let query_luma = decode_validated_luma8(query_bytes, opts.enforce_pixel_cap)?;
     let query_arr = luma_to_array2(&query_luma);
     let (q_h, q_w) = query_arr.dim();
 
@@ -1605,18 +1579,18 @@ pub fn run_catalog_search_from_bytes(
     );
     let hits = catalog.search_features(
         &query_features,
-        top_k,
-        shortlist_k,
-        ratio_threshold,
-        ransac_threshold,
+        opts.top_k,
+        opts.shortlist_k,
+        opts.ratio_threshold,
+        opts.ransac_threshold,
     );
 
     Ok(CatalogSearchResponse {
         query_dimensions: (q_w, q_h),
         query_feature_count: query_features.len(),
         catalog_size: catalog.entries.len(),
-        top_k,
-        shortlist_k,
+        top_k: opts.top_k,
+        shortlist_k: opts.shortlist_k,
         hit_count: hits.len(),
         hits,
     })
@@ -1744,17 +1718,23 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                     args.target_path.display()
                 ))
             })?;
-            let response = run_match_from_bytes_with_options(
+            let response = run_match_from_bytes(
                 &query_bytes,
                 &target_bytes,
-                args.octaves,
-                args.scales,
-                args.threshold,
-                args.ratio,
-                args.ransac_enabled,
-                args.ransac_threshold,
-                args.upsample_first_octave,
-                false,
+                PairPipelineOptions {
+                    sift: SiftConfig::default()
+                        .octaves(args.octaves)
+                        .scales(args.scales)
+                        .contrast_threshold(args.threshold)
+                        .upsample_first_octave(args.upsample_first_octave),
+                    match_options: MatchOptions {
+                        ratio: args.ratio,
+                        mutual: false,
+                    },
+                    ransac_enabled: args.ransac_enabled,
+                    ransac: RansacOptions::default().reproj_threshold(args.ransac_threshold),
+                    enforce_pixel_cap: false,
+                },
             )?;
             let json = serialize_json(&response, args.pretty)?;
             write_json_output(&json, args.output_path.as_ref(), stdout)?;
@@ -1809,13 +1789,19 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
             let (canvas, shown, raw_count) = run_visualize_matches_rgba(
                 &query_bytes,
                 &target_bytes,
-                args.octaves,
-                args.scales,
-                args.threshold,
-                args.ratio,
-                args.ransac_enabled,
-                args.ransac_threshold,
-                false,
+                PairPipelineOptions {
+                    sift: SiftConfig::default()
+                        .octaves(args.octaves)
+                        .scales(args.scales)
+                        .contrast_threshold(args.threshold),
+                    match_options: MatchOptions {
+                        ratio: args.ratio,
+                        mutual: false,
+                    },
+                    ransac_enabled: args.ransac_enabled,
+                    ransac: RansacOptions::default().reproj_threshold(args.ransac_threshold),
+                    enforce_pixel_cap: false,
+                },
             )?;
             save_rgba_output(&canvas, &args.output_path)?;
             writeln!(
@@ -1845,12 +1831,19 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
             let (stitched, inliers) = run_align_images_rgba(
                 &query_bytes,
                 &target_bytes,
-                args.octaves,
-                args.scales,
-                args.threshold,
-                args.ratio,
-                args.ransac_threshold,
-                false,
+                PairPipelineOptions {
+                    sift: SiftConfig::default()
+                        .octaves(args.octaves)
+                        .scales(args.scales)
+                        .contrast_threshold(args.threshold),
+                    match_options: MatchOptions {
+                        ratio: args.ratio,
+                        mutual: false,
+                    },
+                    ransac_enabled: true,
+                    ransac: RansacOptions::default().reproj_threshold(args.ransac_threshold),
+                    enforce_pixel_cap: false,
+                },
             )?;
             save_rgba_output(&stitched, &args.output_path)?;
             writeln!(
@@ -1923,11 +1916,13 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
             let response = run_catalog_search_from_bytes(
                 &catalog,
                 &query_bytes,
-                args.top_k,
-                args.shortlist_k,
-                args.ratio,
-                args.ransac_threshold,
-                false,
+                CatalogSearchOptions {
+                    top_k: args.top_k,
+                    shortlist_k: args.shortlist_k,
+                    ratio_threshold: args.ratio,
+                    ransac_threshold: args.ransac_threshold,
+                    enforce_pixel_cap: false,
+                },
             )?;
             let json = serialize_json(&response, args.pretty)?;
             write_json_output(&json, args.output_path.as_ref(), stdout)?;

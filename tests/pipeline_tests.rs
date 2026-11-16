@@ -14,13 +14,14 @@ use pure_sift::{
     },
     pipeline::{
         BASE_SIGMA, DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO,
-        DEFAULT_RANSAC_REPROJ_THRESHOLD, DescriptorKind, FeatureMatch, Homography2D, MatchOptions,
-        SIFT_DESCRIPTOR_LEN, SiftFeature, SimilarityTransform2D, detect_keypoints,
-        detect_keypoints_with_options, estimate_homography_ransac, extract_extrema,
-        extract_sift_features, extract_sift_features_with_kind, extract_sift_features_with_options,
-        filter_matches_ransac, gaussian_blur, gaussian_kernel_1d, gaussian_kernel_2d,
-        generate_dog_space, luma_to_array2, match_descriptors, match_descriptors_with_options,
-        quantize_descriptor_u8, summarize_tracking,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD, DescriptorKind, FeatureMatch, Homography, Homography2D,
+        MatchOptions, Matcher, RansacOptions, SIFT_DESCRIPTOR_LEN, Sift, SiftConfig, SiftFeature,
+        SimilarityTransform2D, detect_keypoints, detect_keypoints_with_options,
+        estimate_homography_ransac, extract_extrema, extract_sift_features,
+        extract_sift_features_with_kind, extract_sift_features_with_options, filter_matches_ransac,
+        gaussian_blur, gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, luma_to_array2,
+        match_descriptors, match_descriptors_with_options, quantize_descriptor_u8,
+        summarize_tracking,
     },
     visualize::{is_sane_homography_for_dims, resolve_safe_alignment_homography},
 };
@@ -1325,4 +1326,35 @@ fn test_rootsift_normalization_and_u8_descriptor_quantization() {
             "u8 quantization roundtrip L2 error {l2_err} too large"
         );
     }
+}
+
+#[test]
+fn test_sift_config_builder_and_oo_api() {
+    assert!(Sift::new(SiftConfig::default().octaves(0)).is_err());
+    assert!(Sift::new(SiftConfig::default().scales(2)).is_err());
+    assert!(Sift::new(SiftConfig::default().contrast_threshold(0.0)).is_err());
+    assert!(
+        Matcher::new(MatchOptions {
+            ratio: 1.5,
+            mutual: false
+        })
+        .is_err()
+    );
+
+    let sift = Sift::new(
+        SiftConfig::default()
+            .octaves(3)
+            .scales(3)
+            .contrast_threshold(0.015),
+    )
+    .expect("valid SiftConfig");
+    let checker = build_mock_checkerboard_512x512();
+    let feats = sift.detect_and_compute(&checker);
+    assert!(!feats.is_empty());
+
+    let matcher = Matcher::new(MatchOptions::default()).expect("valid MatchOptions");
+    let matches = matcher.match_(&feats, &feats);
+    let (inliers, homography) = Homography::estimate(&matches, RansacOptions::default());
+    assert!(!inliers.is_empty());
+    assert!(homography.is_some());
 }

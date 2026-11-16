@@ -29,13 +29,14 @@ mod server {
             CatalogEntrySummary, DEFAULT_CATALOG_SHORTLIST, DEFAULT_CATALOG_TOP_K, FeatureCatalog,
         },
         cli::{
-            DEFAULT_OCTAVES, DEFAULT_SCALES, VisionError, run_align_images_rgba,
-            run_catalog_search_from_bytes, run_extract_from_bytes, run_match_from_bytes,
-            run_visualize_features_rgba, run_visualize_matches_rgba, validate_match_params,
-            validate_pipeline_params,
+            CatalogSearchOptions, DEFAULT_OCTAVES, DEFAULT_SCALES, PairPipelineOptions,
+            VisionError, run_align_images_rgba, run_catalog_search_from_bytes,
+            run_extract_from_bytes, run_match_from_bytes, run_visualize_features_rgba,
+            run_visualize_matches_rgba, validate_match_params, validate_pipeline_params,
         },
         pipeline::{
             DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO, DEFAULT_RANSAC_REPROJ_THRESHOLD,
+            MatchOptions, RansacOptions, SiftConfig,
         },
         visualize::encode_rgba_png,
     };
@@ -581,13 +582,19 @@ mod server {
             run_match_from_bytes(
                 &query_bytes,
                 &target_bytes,
-                octaves,
-                scales,
-                threshold,
-                ratio_threshold,
-                ransac_enabled,
-                ransac_threshold,
-                true,
+                PairPipelineOptions {
+                    sift: SiftConfig::default()
+                        .octaves(octaves)
+                        .scales(scales)
+                        .contrast_threshold(threshold),
+                    match_options: MatchOptions {
+                        ratio: ratio_threshold,
+                        mutual: false,
+                    },
+                    ransac_enabled,
+                    ransac: RansacOptions::default().reproj_threshold(ransac_threshold),
+                    enforce_pixel_cap: true,
+                },
             )
         })
         .await
@@ -667,30 +674,25 @@ mod server {
         let query_bytes = images.pop().expect("length 2 verified");
 
         match run_blocking_with_timeout(&state, "Image alignment timed out", move |_cancel| {
+            let pair_opts = PairPipelineOptions {
+                sift: SiftConfig::default()
+                    .octaves(octaves)
+                    .scales(scales)
+                    .contrast_threshold(threshold),
+                match_options: MatchOptions {
+                    ratio: ratio_threshold,
+                    mutual: false,
+                },
+                ransac_enabled,
+                ransac: RansacOptions::default().reproj_threshold(ransac_threshold),
+                enforce_pixel_cap: true,
+            };
             let rgba = if mode == "matches" {
-                let (canvas, _, _) = run_visualize_matches_rgba(
-                    &query_bytes,
-                    &target_bytes,
-                    octaves,
-                    scales,
-                    threshold,
-                    ratio_threshold,
-                    ransac_enabled,
-                    ransac_threshold,
-                    true,
-                )?;
+                let (canvas, _, _) =
+                    run_visualize_matches_rgba(&query_bytes, &target_bytes, pair_opts)?;
                 canvas
             } else {
-                let (stitched, _) = run_align_images_rgba(
-                    &query_bytes,
-                    &target_bytes,
-                    octaves,
-                    scales,
-                    threshold,
-                    ratio_threshold,
-                    ransac_threshold,
-                    true,
-                )?;
+                let (stitched, _) = run_align_images_rgba(&query_bytes, &target_bytes, pair_opts)?;
                 stitched
             };
             encode_rgba_png(&rgba).map_err(VisionError::Io)
@@ -829,11 +831,13 @@ mod server {
             run_catalog_search_from_bytes(
                 &guard,
                 &query_bytes,
-                top_k,
-                shortlist_k,
-                ratio,
-                ransac_threshold,
-                true,
+                CatalogSearchOptions {
+                    top_k,
+                    shortlist_k,
+                    ratio_threshold: ratio,
+                    ransac_threshold,
+                    enforce_pixel_cap: true,
+                },
             )
         })
         .await
