@@ -669,6 +669,52 @@ pub fn detect_keypoints(
 /// Dimensionality of the canonical SIFT descriptor (4 x 4 spatial subregions x 8 orientation bins).
 pub const SIFT_DESCRIPTOR_LEN: usize = 128;
 
+/// Normalization variant for 128-D SIFT descriptors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DescriptorKind {
+    /// Standard Lowe (2004) L2-normalized, 0.2-clamped, L2-renormalized SIFT descriptor.
+    #[default]
+    Sift,
+    /// RootSIFT (Arandjelović & Zisserman, 2012): L1-normalized followed by element-wise square root.
+    RootSift,
+}
+
+/// Converts a non-negative 128-D SIFT descriptor to a unit-L2 RootSIFT descriptor
+/// (`sqrt(d_i / sum_j |d_j|)`).
+pub fn to_rootsift_descriptor(desc: &[f32]) -> Vec<f32> {
+    let l1_norm: f32 = desc.iter().map(|&v| v.max(0.0)).sum();
+    if l1_norm <= 1e-7 {
+        return desc.to_vec();
+    }
+    let inv_l1 = 1.0 / l1_norm;
+    desc.iter().map(|&v| (v.max(0.0) * inv_l1).sqrt()).collect()
+}
+
+/// Quantizes a normalized `f32` SIFT/RootSIFT descriptor into compact 8-bit unsigned integers
+/// by scaling by `512.0` and clamping to `[0, 255]` (matching OpenCV's `CV_8U` SIFT convention).
+/// Reduces descriptor memory footprint by 4x (`512 B` -> `128 B` per feature).
+pub fn quantize_descriptor_u8(desc: &[f32]) -> [u8; SIFT_DESCRIPTOR_LEN] {
+    let mut out = [0u8; SIFT_DESCRIPTOR_LEN];
+    for (dst, &src) in out.iter_mut().zip(desc.iter()) {
+        *dst = (src * 512.0).round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+/// Dequantizes a compact `u8` SIFT descriptor back to a unit-L2 `Vec<f32>` (`val / 512.0`,
+/// L2-renormalized).
+pub fn dequantize_descriptor_u8(q: &[u8]) -> Vec<f32> {
+    let mut out: Vec<f32> = q.iter().map(|&b| (b as f32) * (1.0 / 512.0)).collect();
+    let norm: f32 = out.iter().map(|&v| v * v).sum::<f32>().sqrt();
+    if norm > 1e-7 {
+        let inv = 1.0 / norm;
+        for v in &mut out {
+            *v *= inv;
+        }
+    }
+    out
+}
+
 /// Default Lowe's nearest-neighbor distance ratio threshold (d1 / d2) for feature matching.
 pub const DEFAULT_MATCH_RATIO: f32 = 0.75;
 
@@ -1083,9 +1129,10 @@ fn compute_128d_descriptor(
     desc
 }
 
-fn compute_sift_descriptors_from_pyramid(
+fn compute_sift_descriptors_from_pyramid_with_kind(
     pyramid: &[ScaleSpaceOctave],
     keypoints: &[Keypoint],
+    kind: DescriptorKind,
 ) -> Vec<SiftFeature> {
     if pyramid.is_empty() || keypoints.is_empty() {
         return Vec::new();
@@ -1138,7 +1185,7 @@ fn compute_sift_descriptors_from_pyramid(
             );
 
             orientations.into_iter().map(move |orientation| {
-                let descriptor = compute_128d_descriptor(
+                let raw_desc = compute_128d_descriptor(
                     &planes.mag,
                     &planes.angle,
                     planes.width,
@@ -1146,6 +1193,10 @@ fn compute_sift_descriptors_from_pyramid(
                     &oct_kp,
                     orientation,
                 );
+                let descriptor = match kind {
+                    DescriptorKind::Sift => raw_desc,
+                    DescriptorKind::RootSift => to_rootsift_descriptor(&raw_desc),
+                };
 
                 SiftFeature {
                     x: kp.x,
@@ -1160,12 +1211,13 @@ fn compute_sift_descriptors_from_pyramid(
         .collect()
 }
 
-/// Computes canonical orientations (including >=80% secondary orientation splitting) and 128-D SIFT
-/// descriptors for a slice of detected keypoints in parallel across CPU cores via `rayon`.
-///
-/// Gradient magnitude and orientation planes are computed on each keypoint's octave Gaussian image
-/// with window radii proportional to the keypoint's octave-local scale.
-pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Vec<SiftFeature> {
+/// Computes canonical orientations (including >=80% secondary orientation splitting) and 128-D
+/// descriptors with explicit `DescriptorKind` (`Sift` or `RootSift`).
+pub fn compute_sift_descriptors_with_kind(
+    img: &Array2<f32>,
+    keypoints: &[Keypoint],
+    kind: DescriptorKind,
+) -> Vec<SiftFeature> {
     let (height, width) = img.dim();
     if height < 3 || width < 3 || keypoints.is_empty() {
         return Vec::new();
@@ -1199,16 +1251,27 @@ pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Ve
     let pyramid =
         build_scale_space_pyramid_with_options(img, max_octave + 1, scales, upsample_first_octave);
 
-    compute_sift_descriptors_from_pyramid(&pyramid, keypoints)
+    compute_sift_descriptors_from_pyramid_with_kind(&pyramid, keypoints, kind)
 }
 
-/// End-to-end SIFT feature extraction pipeline with explicit control over `upsample_first_octave`.
-pub fn extract_sift_features_with_options(
+/// Computes canonical orientations (including >=80% secondary orientation splitting) and 128-D SIFT
+/// descriptors for a slice of detected keypoints in parallel across CPU cores via `rayon`.
+///
+/// Gradient magnitude and orientation planes are computed on each keypoint's octave Gaussian image
+/// with window radii proportional to the keypoint's octave-local scale.
+pub fn compute_sift_descriptors(img: &Array2<f32>, keypoints: &[Keypoint]) -> Vec<SiftFeature> {
+    compute_sift_descriptors_with_kind(img, keypoints, DescriptorKind::Sift)
+}
+
+/// End-to-end SIFT/RootSIFT feature extraction pipeline with explicit `upsample_first_octave`
+/// and `DescriptorKind`.
+pub fn extract_sift_features_with_kind(
     img: &Array2<f32>,
     octaves: usize,
     scales: usize,
     threshold: f32,
     upsample_first_octave: bool,
+    kind: DescriptorKind,
 ) -> Vec<SiftFeature> {
     let pyramid =
         build_scale_space_pyramid_with_options(img, octaves, scales, upsample_first_octave);
@@ -1227,11 +1290,29 @@ pub fn extract_sift_features_with_options(
         });
         keypoints.truncate(MAX_FEATURES_PER_IMAGE);
     }
-    let mut features = compute_sift_descriptors_from_pyramid(&pyramid, &keypoints);
+    let mut features = compute_sift_descriptors_from_pyramid_with_kind(&pyramid, &keypoints, kind);
     if features.len() > MAX_FEATURES_PER_IMAGE {
         features.truncate(MAX_FEATURES_PER_IMAGE);
     }
     features
+}
+
+/// End-to-end SIFT feature extraction pipeline with explicit control over `upsample_first_octave`.
+pub fn extract_sift_features_with_options(
+    img: &Array2<f32>,
+    octaves: usize,
+    scales: usize,
+    threshold: f32,
+    upsample_first_octave: bool,
+) -> Vec<SiftFeature> {
+    extract_sift_features_with_kind(
+        img,
+        octaves,
+        scales,
+        threshold,
+        upsample_first_octave,
+        DescriptorKind::Sift,
+    )
 }
 
 /// End-to-end SIFT feature extraction pipeline: detects 3D DoG keypoints with sub-pixel/sub-scale
