@@ -1,6 +1,6 @@
 use proptest::{collection::vec, prelude::*, sample::select};
 use pure_sift::pipeline::{
-    DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch, estimate_homography_ransac,
+    DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch, Homography2D, estimate_homography_ransac,
 };
 
 type Point = (f32, f32);
@@ -62,5 +62,86 @@ proptest! {
         let matches = correspondences(pairs.into_iter().map(|(x, y, target)| ((x, y), target)));
         let (inliers, _) = estimate_homography_ransac(&matches, DEFAULT_RANSAC_REPROJ_THRESHOLD);
         prop_assert!(inliers.len() <= matches.len());
+    }
+}
+
+#[test]
+fn ransac_recovers_homography_at_80_percent_outliers_and_with_collinear_distractors() {
+    let true_h = Homography2D {
+        matrix: [
+            [1.12, -0.06, 42.0],
+            [0.05, 0.94, -24.0],
+            [0.00015, -0.0001, 1.0],
+        ],
+    };
+
+    let inlier_pts = [
+        (40.0f32, 50.0f32),
+        (200.0, 40.0),
+        (420.0, 75.0),
+        (560.0, 110.0),
+        (80.0, 210.0),
+        (270.0, 240.0),
+        (490.0, 280.0),
+        (60.0, 410.0),
+        (230.0, 450.0),
+        (440.0, 430.0),
+        (580.0, 470.0),
+        (330.0, 340.0),
+    ];
+
+    let mut matches = Vec::new();
+    for (i, &(qx, qy)) in inlier_pts.iter().enumerate() {
+        let (tx, ty) = true_h.project(qx, qy).unwrap();
+        matches.push(FeatureMatch {
+            query_index: i,
+            target_index: i,
+            query_point: (qx, qy),
+            target_point: (tx, ty),
+            distance: 0.02,
+            ratio: 0.25,
+            displacement: (tx - qx, ty - qy),
+        });
+    }
+
+    // Add 48 gross outliers (80% outlier ratio out of 60 total matches), including collinear points
+    for k in 0..48usize {
+        let idx = inlier_pts.len() + k;
+        let qx = if k < 8 {
+            100.0 + (k as f32) * 30.0
+        } else {
+            ((k * 97) % 600) as f32
+        };
+        let qy = if k < 8 {
+            100.0
+        } else {
+            ((k * 131) % 480) as f32
+        };
+        let tx = ((k * 173 + 50) % 620) as f32;
+        let ty = ((k * 211 + 80) % 490) as f32;
+        matches.push(FeatureMatch {
+            query_index: idx,
+            target_index: idx,
+            query_point: (qx, qy),
+            target_point: (tx, ty),
+            distance: 0.35,
+            ratio: 0.72,
+            displacement: (tx - qx, ty - qy),
+        });
+    }
+
+    let (inliers, est_opt) = estimate_homography_ransac(&matches, DEFAULT_RANSAC_REPROJ_THRESHOLD);
+    assert_eq!(
+        inliers.len(),
+        inlier_pts.len(),
+        "LO-RANSAC must recover all {} true inliers under 80% outliers",
+        inlier_pts.len()
+    );
+    let est_h = est_opt.expect("Expected valid homography");
+    for &(qx, qy) in &inlier_pts {
+        let (tx, ty) = true_h.project(qx, qy).unwrap();
+        let (px, py) = est_h.project(qx, qy).unwrap();
+        let err = (tx - px).hypot(ty - py);
+        assert!(err < 0.05, "Reprojection error {err} >= 0.05 px");
     }
 }
