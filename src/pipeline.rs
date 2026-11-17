@@ -2,6 +2,7 @@
 
 use image::GrayImage;
 use ndarray::Array2;
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -349,6 +350,7 @@ pub fn gaussian_blur(img: &Array2<f32>, sigma: f32) -> Array2<f32> {
         }
     };
 
+    #[cfg(feature = "rayon")]
     if height * width >= 16_384 {
         temp.par_chunks_exact_mut(width)
             .enumerate()
@@ -358,6 +360,10 @@ pub fn gaussian_blur(img: &Array2<f32>, sigma: f32) -> Array2<f32> {
             .enumerate()
             .for_each(horiz_row_fn);
     }
+    #[cfg(not(feature = "rayon"))]
+    temp.chunks_exact_mut(width)
+        .enumerate()
+        .for_each(horiz_row_fn);
 
     // Pass 2: Vertical 1D convolution implemented as row-wise AXPY accumulations.
     // Iterating across contiguous rows `out_row[x] += weight * temp_row[x]` guarantees
@@ -373,6 +379,7 @@ pub fn gaussian_blur(img: &Array2<f32>, sigma: f32) -> Array2<f32> {
         }
     };
 
+    #[cfg(feature = "rayon")]
     if height * width >= 16_384 {
         dst.par_chunks_exact_mut(width)
             .enumerate()
@@ -382,6 +389,10 @@ pub fn gaussian_blur(img: &Array2<f32>, sigma: f32) -> Array2<f32> {
             .enumerate()
             .for_each(vert_row_fn);
     }
+    #[cfg(not(feature = "rayon"))]
+    dst.chunks_exact_mut(width)
+        .enumerate()
+        .for_each(vert_row_fn);
 
     Array2::from_shape_vec((height, width), dst).expect("output shape matches height * width")
 }
@@ -783,7 +794,8 @@ fn extract_extrema_in_octave_slices(
     let searchable_scales = (octave_slices.len() - 2).max(1);
     let k = 2.0f32.powf(1.0 / (searchable_scales as f32));
 
-    for scale_idx_in_octave in 1..(octave_slices.len() - 1) {
+    let scan_slice = |scale_idx_in_octave: usize| -> Vec<Keypoint> {
+        let mut slice_kps = Vec::new();
         let prev_cow = octave_slices[scale_idx_in_octave - 1].as_standard_layout();
         let curr_cow = octave_slices[scale_idx_in_octave].as_standard_layout();
         let next_cow = octave_slices[scale_idx_in_octave + 1].as_standard_layout();
@@ -839,7 +851,7 @@ fn extract_extrema_in_octave_slices(
                             .round()
                             .clamp(1.0, searchable_scales as f32)
                             as usize;
-                        keypoints.push(Keypoint {
+                        slice_kps.push(Keypoint {
                             x: ((x as f32) + dx) * octave_multiplier,
                             y: ((y as f32) + dy) * octave_multiplier,
                             scale: refined_scale.max(0.25 * BASE_SIGMA),
@@ -851,6 +863,23 @@ fn extract_extrema_in_octave_slices(
                 }
             }
         }
+        slice_kps
+    };
+
+    #[cfg(feature = "rayon")]
+    let per_slice: Vec<Vec<Keypoint>> = if height * width >= 16_384 {
+        (1..(octave_slices.len() - 1))
+            .into_par_iter()
+            .map(scan_slice)
+            .collect()
+    } else {
+        (1..(octave_slices.len() - 1)).map(scan_slice).collect()
+    };
+    #[cfg(not(feature = "rayon"))]
+    let per_slice: Vec<Vec<Keypoint>> = (1..(octave_slices.len() - 1)).map(scan_slice).collect();
+
+    for slice_kps in per_slice {
+        keypoints.extend(slice_kps);
     }
 }
 
@@ -1415,43 +1444,46 @@ fn compute_sift_descriptors_from_pyramid_with_kind(
     }
 
     // Compute gradient magnitude & orientation planes in parallel directly on the octave Gaussian images
-    let plane_cache: Vec<OctaveGradientPlanes> = unique_levels
-        .par_iter()
+    #[cfg(feature = "rayon")]
+    let unique_levels_iter = unique_levels.par_iter();
+    #[cfg(not(feature = "rayon"))]
+    let unique_levels_iter = unique_levels.iter();
+    let plane_cache: Vec<OctaveGradientPlanes> = unique_levels_iter
         .map(|&(oct, layer)| {
             OctaveGradientPlanes::from_gaussian(oct, layer, &pyramid[oct].gaussians[layer])
         })
         .collect();
 
     // Compute primary + secondary (>=80% peak) orientations and 128-D descriptors in octave coordinates
-    keypoints
-        .par_iter()
-        .flat_map_iter(|kp| {
-            let (oct, layer) = resolve_octave_and_layer(kp, pyramid);
-            let planes = plane_cache
-                .iter()
-                .find(|p| p.octave == oct && p.layer == layer)
-                .expect("octave/layer gradient plane was pre-indexed");
+    let extract_kp_features = |kp: &Keypoint| -> Vec<SiftFeature> {
+        let (oct, layer) = resolve_octave_and_layer(kp, pyramid);
+        let planes = plane_cache
+            .iter()
+            .find(|p| p.octave == oct && p.layer == layer)
+            .expect("octave/layer gradient plane was pre-indexed");
 
-            let oct_mult = pyramid[oct].scale_factor;
-            let inv_oct_mult = 1.0 / oct_mult;
-            let oct_kp = Keypoint {
-                x: kp.x * inv_oct_mult,
-                y: kp.y * inv_oct_mult,
-                scale: (kp.scale * inv_oct_mult).max(0.5 * BASE_SIGMA),
-                response: kp.response,
-                octave: oct,
-                layer,
-            };
+        let oct_mult = pyramid[oct].scale_factor;
+        let inv_oct_mult = 1.0 / oct_mult;
+        let oct_kp = Keypoint {
+            x: kp.x * inv_oct_mult,
+            y: kp.y * inv_oct_mult,
+            scale: (kp.scale * inv_oct_mult).max(0.5 * BASE_SIGMA),
+            response: kp.response,
+            octave: oct,
+            layer,
+        };
 
-            let orientations = compute_keypoint_orientations(
-                &planes.mag,
-                &planes.angle,
-                planes.width,
-                planes.height,
-                &oct_kp,
-            );
+        let orientations = compute_keypoint_orientations(
+            &planes.mag,
+            &planes.angle,
+            planes.width,
+            planes.height,
+            &oct_kp,
+        );
 
-            orientations.into_iter().map(move |orientation| {
+        orientations
+            .into_iter()
+            .map(move |orientation| {
                 let raw_desc = compute_128d_descriptor(
                     &planes.mag,
                     &planes.angle,
@@ -1474,8 +1506,20 @@ fn compute_sift_descriptors_from_pyramid_with_kind(
                     descriptor,
                 }
             })
-        })
-        .collect()
+            .collect::<Vec<_>>()
+    };
+
+    #[cfg(feature = "rayon")]
+    {
+        keypoints
+            .par_iter()
+            .flat_map_iter(extract_kp_features)
+            .collect()
+    }
+    #[cfg(not(feature = "rayon"))]
+    {
+        keypoints.iter().flat_map(extract_kp_features).collect()
+    }
 }
 
 /// Computes canonical orientations (including >=80% secondary orientation splitting) and 128-D
@@ -1652,8 +1696,11 @@ pub fn match_descriptors_with_options(
         return Vec::new();
     }
 
-    let forward: Vec<FeatureMatch> = query
-        .par_iter()
+    #[cfg(feature = "rayon")]
+    let forward_iter = query.par_iter();
+    #[cfg(not(feature = "rayon"))]
+    let forward_iter = query.iter();
+    let forward: Vec<FeatureMatch> = forward_iter
         .enumerate()
         .filter_map(|(q_idx, q_feat)| {
             if q_feat.descriptor.len() != SIFT_DESCRIPTOR_LEN {
@@ -1712,8 +1759,11 @@ pub fn match_descriptors_with_options(
     }
 
     // Reverse nearest-neighbor cross-check: keep `(q, t)` iff `q` is `t`'s nearest neighbor in `query`.
-    forward
-        .into_par_iter()
+    #[cfg(feature = "rayon")]
+    let forward_mut_iter = forward.into_par_iter();
+    #[cfg(not(feature = "rayon"))]
+    let forward_mut_iter = forward.into_iter();
+    forward_mut_iter
         .filter(|m| {
             let t_desc = &target[m.target_index].descriptor;
             let mut best_rev_dist_sq = f32::INFINITY;

@@ -7,6 +7,7 @@ use std::{
     path::Path,
 };
 
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -335,9 +336,11 @@ impl FeatureCatalog {
 
     /// Recomputes transient 128-bit signatures and search indices.
     pub fn rebuild_all_signatures(&mut self) {
-        self.entries
-            .par_iter_mut()
-            .for_each(CatalogEntry::rebuild_signatures);
+        #[cfg(feature = "rayon")]
+        let iter = self.entries.par_iter_mut();
+        #[cfg(not(feature = "rayon"))]
+        let iter = self.entries.iter_mut();
+        iter.for_each(CatalogEntry::rebuild_signatures);
         self.rebuild_indices();
     }
 
@@ -586,8 +589,11 @@ impl FeatureCatalog {
                     .filter(|&(_, v)| v > 0)
                     .collect()
             } else {
-                self.entries
-                    .par_iter()
+                #[cfg(feature = "rayon")]
+                let entry_iter = self.entries.par_iter();
+                #[cfg(not(feature = "rayon"))]
+                let entry_iter = self.entries.iter();
+                entry_iter
                     .enumerate()
                     .map(|(idx, entry)| {
                         let votes = count_coarse_hamming_votes(&query_sigs, &entry.signatures);
@@ -605,8 +611,11 @@ impl FeatureCatalog {
         }
 
         // Step 2: Parallel exact 128-D Lowe ratio + RANSAC geometric verification on shortlist
-        let mut hits: Vec<CatalogSearchHit> = candidates
-            .par_iter()
+        #[cfg(feature = "rayon")]
+        let cand_iter = candidates.par_iter();
+        #[cfg(not(feature = "rayon"))]
+        let cand_iter = candidates.iter();
+        let mut hits: Vec<CatalogSearchHit> = cand_iter
             .filter_map(|&(idx, coarse_votes)| {
                 let entry = &self.entries[idx];
                 if entry.features.len() < 2 {
