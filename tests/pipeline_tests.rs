@@ -69,12 +69,14 @@ fn test_checkerboard_512x512_under_50ms_and_deterministic() {
     );
 
     // 1. Assert generous CI-safe execution budget (microbenchmarks live in `benches/`; this catches catastrophic regressions
-    // without flaking on single-threaded `--no-default-features` shared CI runners)
-    assert!(
-        elapsed < Duration::from_millis(500),
-        "Expected 512x512 pipeline execution under 500ms, but took {:?}",
-        elapsed
-    );
+    // without flaking on single-threaded `--no-default-features` shared CI runners or instrumented coverage runs)
+    if std::env::var_os("LLVM_PROFILE_FILE").is_none() {
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "Expected 512x512 pipeline execution under 500ms, but took {:?}",
+            elapsed
+        );
+    }
 
     // 2. Assert keypoints were discovered on the high-contrast checkerboard geometry
     assert!(
