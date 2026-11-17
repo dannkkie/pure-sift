@@ -418,7 +418,7 @@ mod server {
         let catalog = if let Some(ref path) = opts.catalog_path
             && path.exists()
         {
-            FeatureCatalog::load_json(path).unwrap_or_else(|err| {
+            FeatureCatalog::load_auto(path).unwrap_or_else(|err| {
                 tracing::warn!(path = %path.display(), error = %err, "failed to load CATALOG_PATH");
                 FeatureCatalog::new(DEFAULT_OCTAVES, DEFAULT_SCALES, DEFAULT_CONTRAST_THRESHOLD)
             })
@@ -444,7 +444,7 @@ mod server {
                         if let Some(cat) = cat_clone {
                             let path_clone = save_path.clone();
                             let _ = tokio::task::spawn_blocking(move || {
-                                if let Err(err) = cat.save_json(&path_clone, false) {
+                                if let Err(err) = cat.save_auto(&path_clone, false) {
                                     tracing::error!(path = %path_clone.display(), error = %err, "background catalog save failed");
                                 }
                             })

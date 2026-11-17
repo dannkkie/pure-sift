@@ -1376,3 +1376,58 @@ fn test_pyramid_matches_legacy_dog_space_output() {
         "Explicit Pyramid extrema must match legacy Vec<Array2<f32>> DoG output"
     );
 }
+
+#[test]
+fn test_binary_catalog_roundtrip_size_and_json_fallback() {
+    let temp_dir = std::env::temp_dir().join("pure_sift_binary_catalog_test");
+    fs::create_dir_all(&temp_dir).expect("create temp dir");
+    let bin_path = temp_dir.join("catalog.psift");
+    let json_path = temp_dir.join("catalog.json");
+
+    let mut catalog = FeatureCatalog::new(3, 3, DEFAULT_CONTRAST_THRESHOLD);
+    for scene_id in 0..3usize {
+        let gray = render_synthetic_scene(scene_id, 0, 0);
+        let arr = luma_to_array2(&gray);
+        let feats = extract_sift_features(&arr, 3, 3, DEFAULT_CONTRAST_THRESHOLD);
+        catalog.upsert_entry(format!("scene_{scene_id}.png"), 220, 220, feats);
+    }
+
+    catalog.save_binary(&bin_path).expect("save_binary");
+    catalog.save_json(&json_path, false).expect("save_json");
+
+    let bin_len = fs::metadata(&bin_path).unwrap().len();
+    let json_len = fs::metadata(&json_path).unwrap().len();
+    assert!(
+        bin_len * 4 < json_len,
+        "Expected binary catalog ({bin_len} B) to be >4x smaller than JSON ({json_len} B)"
+    );
+
+    let loaded_bin = FeatureCatalog::load_auto(&bin_path).expect("load_auto binary");
+    assert_eq!(loaded_bin.entries.len(), catalog.entries.len());
+    assert_eq!(
+        loaded_bin.entries[0].signatures,
+        catalog.entries[0].signatures
+    );
+
+    let loaded_json = FeatureCatalog::load_auto(&json_path).expect("load_auto json");
+    assert_eq!(loaded_json.entries.len(), catalog.entries.len());
+
+    let query_gray = render_synthetic_scene(0, 16, 14);
+    let query_feats = extract_sift_features(
+        &luma_to_array2(&query_gray),
+        3,
+        3,
+        DEFAULT_CONTRAST_THRESHOLD,
+    );
+    let hits = loaded_bin.search_features(
+        &query_feats,
+        3,
+        2,
+        DEFAULT_MATCH_RATIO,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD,
+    );
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].id, "scene_0.png");
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
