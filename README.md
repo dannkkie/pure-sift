@@ -44,20 +44,19 @@ image = "0.25"
 ```rust
 use image::ImageReader;
 use pure_sift::{
-    DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO, DEFAULT_RANSAC_REPROJ_THRESHOLD,
-    estimate_homography_ransac, extract_sift_features, luma_to_array2, match_descriptors,
+    Homography, MatchOptions, Matcher, RansacOptions, Sift, SiftConfig, luma_to_array2,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let q_luma = ImageReader::open("query.jpg")?.decode()?.into_luma8();
     let t_luma = ImageReader::open("target.jpg")?.decode()?.into_luma8();
 
-    let q_feats = extract_sift_features(&luma_to_array2(&q_luma), 3, 3, DEFAULT_CONTRAST_THRESHOLD);
-    let t_feats = extract_sift_features(&luma_to_array2(&t_luma), 3, 3, DEFAULT_CONTRAST_THRESHOLD);
+    let sift = Sift::new(SiftConfig::default().octaves(4).contrast_threshold(0.015))?;
+    let q_feats = sift.detect_and_compute(&luma_to_array2(&q_luma));
+    let t_feats = sift.detect_and_compute(&luma_to_array2(&t_luma));
 
-    let matches = match_descriptors(&q_feats, &t_feats, DEFAULT_MATCH_RATIO);
-    let (inliers, homography) =
-        estimate_homography_ransac(&matches, DEFAULT_RANSAC_REPROJ_THRESHOLD);
+    let matches = Matcher::new(MatchOptions::default())?.match_(&q_feats, &t_feats);
+    let (inliers, homography) = Homography::estimate(&matches, RansacOptions::default());
 
     println!("RANSAC Homography inliers: {} / {}", inliers.len(), matches.len());
     if let Some(h) = homography {

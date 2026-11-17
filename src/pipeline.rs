@@ -17,6 +17,207 @@ pub const DEFAULT_UPSAMPLE_FIRST_OCTAVE: bool = true;
 /// Default contrast threshold for 3D DoG extrema extraction on normalized [0.0, 1.0] images.
 pub const DEFAULT_CONTRAST_THRESHOLD: f32 = 0.015;
 
+/// Validated builder configuration for the [`Sift`] feature extractor.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SiftConfig {
+    pub octaves: usize,
+    pub scales: usize,
+    pub contrast_threshold: f32,
+    pub upsample_first_octave: bool,
+    pub descriptor_kind: DescriptorKind,
+}
+
+impl Default for SiftConfig {
+    fn default() -> Self {
+        Self {
+            octaves: 3,
+            scales: 3,
+            contrast_threshold: DEFAULT_CONTRAST_THRESHOLD,
+            upsample_first_octave: DEFAULT_UPSAMPLE_FIRST_OCTAVE,
+            descriptor_kind: DescriptorKind::Sift,
+        }
+    }
+}
+
+impl SiftConfig {
+    /// Sets the number of scale-space octaves (`1..=8`).
+    pub fn octaves(mut self, octaves: usize) -> Self {
+        self.octaves = octaves;
+        self
+    }
+
+    /// Sets the number of searchable DoG scale levels per octave (`3..=10`).
+    pub fn scales(mut self, scales: usize) -> Self {
+        self.scales = scales;
+        self
+    }
+
+    /// Sets the DoG contrast threshold in `(0.0, 1.0]`.
+    pub fn contrast_threshold(mut self, threshold: f32) -> Self {
+        self.contrast_threshold = threshold;
+        self
+    }
+
+    /// Enables or disables 2x bilinear upsampling of the first octave.
+    pub fn upsample_first_octave(mut self, upsample: bool) -> Self {
+        self.upsample_first_octave = upsample;
+        self
+    }
+
+    /// Sets the descriptor normalization variant (`Sift` or `RootSift`).
+    pub fn descriptor_kind(mut self, kind: DescriptorKind) -> Self {
+        self.descriptor_kind = kind;
+        self
+    }
+
+    /// Validates all SIFT configuration parameters.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=8).contains(&self.octaves) {
+            return Err(format!(
+                "Invalid `octaves`={}: must be between 1 and 8",
+                self.octaves
+            ));
+        }
+        if !(3..=10).contains(&self.scales) {
+            return Err(format!(
+                "Invalid `scales`={}: must be between 3 and 10 for 3D extrema extraction",
+                self.scales
+            ));
+        }
+        if !self.contrast_threshold.is_finite()
+            || self.contrast_threshold <= 0.0
+            || self.contrast_threshold > 1.0
+        {
+            return Err(format!(
+                "Invalid `contrast_threshold`={}: must be finite and in (0.0, 1.0]",
+                self.contrast_threshold
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Configured SIFT keypoint detector and 128-D descriptor extractor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sift {
+    config: SiftConfig,
+}
+
+impl Sift {
+    /// Constructs a validated [`Sift`] extractor from `config`.
+    pub fn new(config: SiftConfig) -> Result<Self, String> {
+        config.validate()?;
+        Ok(Self { config })
+    }
+
+    /// Returns the active [`SiftConfig`].
+    pub fn config(&self) -> SiftConfig {
+        self.config
+    }
+
+    /// Detects scale-space keypoints without computing descriptors.
+    pub fn detect_keypoints(&self, img: &Array2<f32>) -> Vec<Keypoint> {
+        detect_keypoints_with_options(
+            img,
+            self.config.octaves,
+            self.config.scales,
+            self.config.contrast_threshold,
+            self.config.upsample_first_octave,
+        )
+    }
+
+    /// Detects keypoints and computes canonical orientations + 128-D descriptors.
+    pub fn detect_and_compute(&self, img: &Array2<f32>) -> Vec<SiftFeature> {
+        extract_sift_features_with_kind(
+            img,
+            self.config.octaves,
+            self.config.scales,
+            self.config.contrast_threshold,
+            self.config.upsample_first_octave,
+            self.config.descriptor_kind,
+        )
+    }
+}
+
+/// Validated SIFT descriptor matcher.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Matcher {
+    options: MatchOptions,
+}
+
+impl Matcher {
+    /// Constructs a validated [`Matcher`] from `options`.
+    pub fn new(options: MatchOptions) -> Result<Self, String> {
+        if !options.ratio.is_finite() || options.ratio <= 0.0 || options.ratio > 1.0 {
+            return Err(format!(
+                "Invalid `ratio`={}: must be finite and in (0.0, 1.0]",
+                options.ratio
+            ));
+        }
+        Ok(Self { options })
+    }
+
+    /// Matches `query` features against `target` features.
+    pub fn match_(&self, query: &[SiftFeature], target: &[SiftFeature]) -> Vec<FeatureMatch> {
+        match_descriptors_with_options(query, target, self.options)
+    }
+}
+
+/// Options for RANSAC geometric model estimation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RansacOptions {
+    /// Reprojection error threshold in pixels (`0.5..=100.0`).
+    pub reproj_threshold: f32,
+}
+
+impl Default for RansacOptions {
+    fn default() -> Self {
+        Self {
+            reproj_threshold: DEFAULT_RANSAC_REPROJ_THRESHOLD,
+        }
+    }
+}
+
+impl RansacOptions {
+    /// Sets the RANSAC reprojection threshold in pixels.
+    pub fn reproj_threshold(mut self, threshold: f32) -> Self {
+        self.reproj_threshold = threshold;
+        self
+    }
+
+    /// Validates RANSAC options.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.reproj_threshold.is_finite() || !(0.5..=100.0).contains(&self.reproj_threshold) {
+            return Err(format!(
+                "Invalid `reproj_threshold`={}: must be between 0.5 and 100.0",
+                self.reproj_threshold
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Namespace for RANSAC geometric model estimation (`Homography::estimate`).
+pub struct Homography;
+
+impl Homography {
+    /// Estimates a 3x3 planar homography and filters inlier matches using LO-RANSAC.
+    pub fn estimate(
+        matches: &[FeatureMatch],
+        options: RansacOptions,
+    ) -> (Vec<FeatureMatch>, Option<Homography2D>) {
+        estimate_homography_ransac(matches, options.reproj_threshold)
+    }
+
+    /// Estimates a 2D similarity transform and filters inlier matches using RANSAC.
+    pub fn estimate_similarity(
+        matches: &[FeatureMatch],
+        options: RansacOptions,
+    ) -> (Vec<FeatureMatch>, Option<SimilarityTransform2D>) {
+        filter_matches_ransac(matches, options.reproj_threshold)
+    }
+}
+
 /// Represents a detected scale-invariant feature point (keypoint) in 2D image coordinates
 /// and scale space, following US6711293B1.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
