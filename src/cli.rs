@@ -1895,7 +1895,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
             }
 
             catalog
-                .save_json(&args.output_path, args.pretty)
+                .save_auto(&args.output_path, args.pretty)
                 .map_err(VisionError::Io)?;
             writeln!(
                 stdout,
@@ -1906,7 +1906,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
             .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}")))
         }
         CliCommand::CatalogSearch(args) => {
-            let catalog = FeatureCatalog::load_json(&args.catalog_path).map_err(VisionError::Io)?;
+            let catalog = FeatureCatalog::load_auto(&args.catalog_path).map_err(VisionError::Io)?;
             let query_bytes = fs::read(&args.query_path).map_err(|e| {
                 VisionError::Io(format!(
                     "Failed to read query image `{}`: {e}",
