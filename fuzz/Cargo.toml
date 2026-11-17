@@ -1,0 +1,26 @@
+[package]
+name = "pure-sift-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pure-sift = { path = "..", default-features = false }
+
+[[bin]]
+name = "decode_image"
+path = "fuzz_targets/decode_image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cli_parse"
+path = "fuzz_targets/cli_parse.rs"
+test = false
+doc = false
+bench = false

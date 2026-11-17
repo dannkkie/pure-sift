@@ -1,0 +1,19 @@
+name: Nightly Fuzz
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decode_image, cli_parse]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
