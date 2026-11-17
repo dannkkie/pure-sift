@@ -1,6 +1,8 @@
 use proptest::{collection::vec, prelude::*, sample::select};
 use pure_sift::pipeline::{
-    DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch, Homography2D, estimate_homography_ransac,
+    DEFAULT_RANSAC_REPROJ_THRESHOLD, DEFAULT_SIMILARITY_RANSAC_SEED, FeatureMatch, Homography,
+    Homography2D, RansacOptions, estimate_homography_ransac, estimate_homography_ransac_with_seed,
+    filter_matches_ransac, filter_matches_ransac_with_seed,
 };
 
 type Point = (f32, f32);
@@ -144,4 +146,92 @@ fn ransac_recovers_homography_at_80_percent_outliers_and_with_collinear_distract
         let err = (tx - px).hypot(ty - py);
         assert!(err < 0.05, "Reprojection error {err} >= 0.05 px");
     }
+}
+
+#[test]
+fn ransac_with_seed_is_deterministic_across_runs() {
+    let true_h = Homography2D {
+        matrix: [
+            [1.04, -0.08, 22.0],
+            [0.06, 0.97, -14.0],
+            [0.0002, -0.0001, 1.0],
+        ],
+    };
+
+    let mut matches = Vec::new();
+    for i in 0..24 {
+        let qx = 40.0 + ((i % 6) as f32) * 75.0;
+        let qy = 35.0 + ((i / 6) as f32) * 80.0;
+        let (tx, ty) = true_h.project(qx, qy).unwrap();
+        matches.push(FeatureMatch {
+            query_index: i,
+            target_index: i,
+            query_point: (qx, qy),
+            target_point: (tx, ty),
+            distance: 0.15,
+            ratio: 0.55,
+            displacement: (tx - qx, ty - qy),
+        });
+    }
+    for k in 0..48 {
+        let idx = 24 + k;
+        let qx = ((k * 83 + 17) % 500) as f32;
+        let qy = ((k * 127 + 29) % 400) as f32;
+        let tx = ((k * 191 + 41) % 520) as f32;
+        let ty = ((k * 233 + 67) % 420) as f32;
+        matches.push(FeatureMatch {
+            query_index: idx,
+            target_index: idx,
+            query_point: (qx, qy),
+            target_point: (tx, ty),
+            distance: 0.4,
+            ratio: 0.78,
+            displacement: (tx - qx, ty - qy),
+        });
+    }
+
+    let custom_seed = 0x1234_5678_9ABC_DEF0u64;
+    let (h_inliers_a, h_a) = estimate_homography_ransac_with_seed(
+        &matches,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD,
+        custom_seed,
+    );
+    let (h_inliers_b, h_b) = estimate_homography_ransac_with_seed(
+        &matches,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD,
+        custom_seed,
+    );
+    let (h_inliers_opt, h_opt) =
+        Homography::estimate(&matches, RansacOptions::default().seed(custom_seed));
+    assert_eq!(h_inliers_a, h_inliers_b);
+    assert_eq!(h_inliers_a, h_inliers_opt);
+    assert_eq!(h_a, h_b);
+    assert_eq!(h_a, h_opt);
+
+    let (s_inliers_a, s_a) =
+        filter_matches_ransac_with_seed(&matches, DEFAULT_RANSAC_REPROJ_THRESHOLD, custom_seed);
+    let (s_inliers_b, s_b) =
+        filter_matches_ransac_with_seed(&matches, DEFAULT_RANSAC_REPROJ_THRESHOLD, custom_seed);
+    let (s_inliers_opt, s_opt) =
+        Homography::estimate_similarity(&matches, RansacOptions::default().seed(custom_seed));
+    assert_eq!(s_inliers_a, s_inliers_b);
+    assert_eq!(s_inliers_a, s_inliers_opt);
+    assert_eq!(s_a, s_b);
+    assert_eq!(s_a, s_opt);
+
+    // Default entrypoints match their documented default seeds
+    let (def_s_inliers, def_s) = filter_matches_ransac(&matches, DEFAULT_RANSAC_REPROJ_THRESHOLD);
+    let (seed_s_inliers, seed_s) = filter_matches_ransac_with_seed(
+        &matches,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD,
+        DEFAULT_SIMILARITY_RANSAC_SEED,
+    );
+    assert_eq!(def_s_inliers, seed_s_inliers);
+    assert_eq!(def_s, seed_s);
+
+    let (def_h_inliers, def_h) =
+        estimate_homography_ransac(&matches, DEFAULT_RANSAC_REPROJ_THRESHOLD);
+    let (opt_h_inliers, opt_h) = Homography::estimate(&matches, RansacOptions::default());
+    assert_eq!(def_h_inliers, opt_h_inliers);
+    assert_eq!(def_h, opt_h);
 }
