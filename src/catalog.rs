@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{BufWriter, Read, Write},
     path::Path,
@@ -149,8 +150,8 @@ pub struct CatalogSearchHit {
     pub homography: Option<Homography2D>,
 }
 
-/// Serializable, multi-core SIFT visual search catalog with 128-bit binary prefiltering
-/// and exact geometric RANSAC verification.
+/// Serializable, multi-core SIFT visual search catalog with 128-bit Multi-Index Hashing (MIH)
+/// prefiltering, O(1) id lookup/deletion, and exact geometric RANSAC verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureCatalog {
     pub octaves: usize,
@@ -159,6 +160,10 @@ pub struct FeatureCatalog {
     #[serde(default)]
     pub descriptor_kind: DescriptorKind,
     pub entries: Vec<CatalogEntry>,
+    #[serde(skip)]
+    id_index: HashMap<String, usize>,
+    #[serde(skip)]
+    mih_tables: Vec<Vec<Vec<(u32, u32)>>>,
 }
 
 const BINARY_CATALOG_MAGIC: &[u8; 8] = b"PSIFTCAT";
@@ -247,10 +252,44 @@ impl FeatureCatalog {
             threshold,
             descriptor_kind: DescriptorKind::Sift,
             entries: Vec::new(),
+            id_index: HashMap::new(),
+            mih_tables: Vec::new(),
         }
     }
 
-    /// Inserts or replaces an image entry in the catalog.
+    fn ensure_mih_allocated(&mut self) {
+        if self.mih_tables.is_empty() {
+            self.mih_tables = (0..16).map(|_| vec![Vec::new(); 256]).collect();
+        }
+    }
+
+    fn index_entry_signatures(&mut self, entry_idx: usize) {
+        self.ensure_mih_allocated();
+        let e_u32 = entry_idx as u32;
+        for (sig_idx, &sig) in self.entries[entry_idx].signatures.iter().enumerate() {
+            let s_u32 = sig_idx as u32;
+            for (band, table) in self.mih_tables.iter_mut().enumerate() {
+                let key = ((sig >> (band * 8)) & 0xFF) as usize;
+                table[key].push((e_u32, s_u32));
+            }
+        }
+    }
+
+    /// Rebuilds the `id -> index` map and Multi-Index Hashing (MIH) inverted tables.
+    pub fn rebuild_indices(&mut self) {
+        self.id_index.clear();
+        for table in &mut self.mih_tables {
+            for bucket in table {
+                bucket.clear();
+            }
+        }
+        for idx in 0..self.entries.len() {
+            self.id_index.insert(self.entries[idx].id.clone(), idx);
+            self.index_entry_signatures(idx);
+        }
+    }
+
+    /// Inserts or replaces an image entry in the catalog in O(1) id lookup time.
     pub fn upsert_entry(
         &mut self,
         id: impl Into<String>,
@@ -260,11 +299,25 @@ impl FeatureCatalog {
     ) {
         let id_str = id.into();
         let entry = CatalogEntry::new(id_str.clone(), width, height, features);
-        if let Some(existing) = self.entries.iter_mut().find(|e| e.id == id_str) {
-            *existing = entry;
+        if let Some(&existing_idx) = self.id_index.get(&id_str) {
+            self.entries[existing_idx] = entry;
+            self.rebuild_indices();
         } else {
+            let idx = self.entries.len();
             self.entries.push(entry);
+            self.id_index.insert(id_str, idx);
+            self.index_entry_signatures(idx);
         }
+    }
+
+    /// Removes an entry by `id`, returning `true` if it existed.
+    pub fn remove(&mut self, id: &str) -> bool {
+        let Some(idx) = self.id_index.remove(id) else {
+            return false;
+        };
+        self.entries.swap_remove(idx);
+        self.rebuild_indices();
+        true
     }
 
     /// Returns lightweight summaries for all indexed entries.
@@ -280,11 +333,12 @@ impl FeatureCatalog {
             .collect()
     }
 
-    /// Recomputes transient 128-bit signatures (called after deserializing from disk).
+    /// Recomputes transient 128-bit signatures and search indices.
     pub fn rebuild_all_signatures(&mut self) {
         self.entries
             .par_iter_mut()
             .for_each(CatalogEntry::rebuild_signatures);
+        self.rebuild_indices();
     }
 
     /// Persists the catalog to a JSON file atomically (write to temp file + rename).
@@ -439,13 +493,17 @@ impl FeatureCatalog {
             });
         }
 
-        Ok(Self {
+        let mut catalog = Self {
             octaves,
             scales,
             threshold,
             descriptor_kind,
             entries,
-        })
+            id_index: HashMap::new(),
+            mih_tables: Vec::new(),
+        };
+        catalog.rebuild_indices();
+        Ok(catalog)
     }
 
     /// Saves as JSON when `path` ends with `.json` (case-insensitive), or compact binary otherwise.
@@ -499,16 +557,44 @@ impl FeatureCatalog {
             .map(|f| quantize_descriptor_u128(&f.descriptor))
             .collect();
 
-        // Step 1: Parallel coarse 128-bit Hamming voting across all catalog entries
-        let mut candidates: Vec<(usize, usize)> = self
-            .entries
-            .par_iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                let votes = count_coarse_hamming_votes(&query_sigs, &entry.signatures);
-                (idx, votes)
-            })
-            .collect();
+        // Step 1: Coarse 128-bit Hamming voting (16x8-bit Multi-Index Hashing for larger catalogs,
+        // parallel exhaustive scan for small catalogs <= 32 entries)
+        let mut candidates: Vec<(usize, usize)> =
+            if self.entries.len() > 32 && !self.mih_tables.is_empty() {
+                let mut votes = vec![0usize; self.entries.len()];
+                let mut seen_stamp = vec![0usize; self.entries.len()];
+                for (q_idx, &qs) in query_sigs.iter().enumerate() {
+                    let stamp = q_idx + 1;
+                    for (band, table) in self.mih_tables.iter().enumerate() {
+                        let key = ((qs >> (band * 8)) & 0xFF) as usize;
+                        for &(entry_u32, sig_u32) in &table[key] {
+                            let e_idx = entry_u32 as usize;
+                            if seen_stamp[e_idx] == stamp {
+                                continue;
+                            }
+                            let es = self.entries[e_idx].signatures[sig_u32 as usize];
+                            if (qs ^ es).count_ones() <= COARSE_HAMMING_MAX_BITS {
+                                seen_stamp[e_idx] = stamp;
+                                votes[e_idx] += 1;
+                            }
+                        }
+                    }
+                }
+                votes
+                    .into_iter()
+                    .enumerate()
+                    .filter(|&(_, v)| v > 0)
+                    .collect()
+            } else {
+                self.entries
+                    .par_iter()
+                    .enumerate()
+                    .map(|(idx, entry)| {
+                        let votes = count_coarse_hamming_votes(&query_sigs, &entry.signatures);
+                        (idx, votes)
+                    })
+                    .collect()
+            };
 
         if candidates.len() > shortlist_k.max(1) {
             candidates.sort_by(|a, b| {

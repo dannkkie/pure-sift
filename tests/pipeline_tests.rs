@@ -1431,3 +1431,56 @@ fn test_binary_catalog_roundtrip_size_and_json_fallback() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_catalog_remove_and_mih_indexed_search() {
+    let mut catalog = FeatureCatalog::new(3, 3, DEFAULT_CONTRAST_THRESHOLD);
+    let target_luma = image::open("docs/samples/aerial_west.jpg")
+        .expect("Failed to open docs/samples/aerial_west.jpg")
+        .into_luma8();
+    let target_feats = extract_sift_features(
+        &luma_to_array2(&target_luma),
+        3,
+        3,
+        DEFAULT_CONTRAST_THRESHOLD,
+    );
+    let distractor_1 = extract_sift_features(
+        &luma_to_array2(&render_synthetic_scene(1, 0, 0)),
+        3,
+        3,
+        DEFAULT_CONTRAST_THRESHOLD,
+    );
+    let distractor_2 = extract_sift_features(
+        &luma_to_array2(&render_synthetic_scene(2, 0, 0)),
+        3,
+        3,
+        DEFAULT_CONTRAST_THRESHOLD,
+    );
+
+    // Populate >32 entries to exercise the Multi-Index Hashing (MIH) inverted index path
+    for i in 0..40usize {
+        let feats = if i == 17 {
+            target_feats.clone()
+        } else if i % 2 == 0 {
+            distractor_1.clone()
+        } else {
+            distractor_2.clone()
+        };
+        catalog.upsert_entry(format!("item_{i:02}.png"), 220, 220, feats);
+    }
+
+    let hits = catalog.search_features(
+        &target_feats,
+        3,
+        8,
+        DEFAULT_MATCH_RATIO,
+        DEFAULT_RANSAC_REPROJ_THRESHOLD,
+    );
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].id, "item_17.png");
+
+    // Test O(1) entry removal
+    assert!(catalog.remove("item_17.png"));
+    assert!(!catalog.remove("item_17.png"));
+    assert_eq!(catalog.entries.len(), 39);
+}

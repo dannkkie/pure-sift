@@ -18,11 +18,11 @@ mod server {
     use axum::{
         Json, Router,
         body::Body,
-        extract::{DefaultBodyLimit, Multipart, Query, State},
+        extract::{DefaultBodyLimit, Multipart, Path, Query, State},
         http::{HeaderName, HeaderValue, Request, StatusCode, header},
         middleware::{self, Next},
         response::{Html, IntoResponse, Response},
-        routing::{get, post},
+        routing::{delete, get, post},
     };
     use pure_sift::{
         catalog::{
@@ -477,6 +477,7 @@ mod server {
             .route("/api/v1/catalog", get(catalog_list_handler))
             .route("/api/v1/catalog/index", post(catalog_index_handler))
             .route("/api/v1/catalog/search", post(catalog_search_handler))
+            .route("/api/v1/catalog/{id}", delete(catalog_delete_handler))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 auth_middleware,
@@ -847,6 +848,50 @@ mod server {
         }
     }
 
+    /// `DELETE /api/v1/catalog/{id}` — removes an indexed entry by ID from the live SIFT catalog.
+    async fn catalog_delete_handler(
+        State(state): State<AppState>,
+        Path(id): Path<String>,
+    ) -> Response {
+        let trimmed = id.trim().to_string();
+        if trimmed.is_empty() {
+            return json_error_response(StatusCode::BAD_REQUEST, "Entry `id` must not be empty");
+        }
+
+        let (removed, catalog_size) = {
+            let Ok(mut guard) = state.catalog.write() else {
+                return json_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Catalog lock poisoned",
+                );
+            };
+            let removed = guard.remove(&trimmed);
+            let catalog_size = guard.entries.len();
+            (removed, catalog_size)
+        };
+
+        if !removed {
+            return json_error_response(
+                StatusCode::NOT_FOUND,
+                format!("Catalog entry `{trimmed}` not found"),
+            );
+        }
+
+        if state.catalog_path.is_some() {
+            state.catalog_save_notify.notify_one();
+        }
+
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "deleted": true,
+                "id": trimmed,
+                "catalog_size": catalog_size,
+            })),
+        )
+            .into_response()
+    }
+
     /// Waits for `Ctrl+C` termination signal to initiate graceful HTTP server drain.
     async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
@@ -1084,6 +1129,33 @@ mod tests {
             res.unwrap_err().status(),
             axum::http::StatusCode::GATEWAY_TIMEOUT
         );
+
+        // 6. DELETE /api/v1/catalog/{id} -> 404 when absent, 200 after inserting
+        let del_missing = send_raw_http_request(
+            addr,
+            "DELETE /api/v1/catalog/nonexistent HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret-token-123\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            del_missing.starts_with("HTTP/1.1 404"),
+            "Expected 404 for missing catalog entry, got:\n{del_missing}"
+        );
+
+        {
+            let mut guard = state.catalog.write().unwrap();
+            guard.upsert_entry("sample.png", 100, 100, Vec::new());
+        }
+        let del_ok = send_raw_http_request(
+            addr,
+            "DELETE /api/v1/catalog/sample.png HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret-token-123\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            del_ok.starts_with("HTTP/1.1 200 OK"),
+            "Expected 200 OK deleting sample.png, got:\n{del_ok}"
+        );
+        assert!(del_ok.contains("\"deleted\":true"));
+        assert_eq!(state.catalog.read().unwrap().entries.len(), 0);
 
         server_task.abort();
     }
