@@ -3,3 +3,4 @@ target/
 /real_camera_benchmarks/
 /*.png
 /*.jpg
+/docs/pkg/

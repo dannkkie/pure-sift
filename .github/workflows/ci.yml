@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  lint-and-wasm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,5 +27,31 @@ jobs:
             cargo fmt --manifest-path wasm-demo/Cargo.toml -- --check
             cargo check --manifest-path wasm-demo/Cargo.toml --target wasm32-unknown-unknown
           fi
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: ["1.88", stable]
+        exclude:
+          - os: macos-latest
+            rust: "1.88"
+          - os: windows-latest
+            rust: "1.88"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
       - run: cargo test --release
       - run: cargo test --no-default-features --release
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
