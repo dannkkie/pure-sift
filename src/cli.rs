@@ -452,6 +452,26 @@ pub fn map_image_prefix(prefix: &str, err: VisionError) -> VisionError {
     }
 }
 
+/// Output serialization format for CLI `extract` and `match` subcommands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    #[default]
+    Json,
+    Csv,
+}
+
+impl OutputFormat {
+    fn parse(value: &str) -> Result<Self, VisionError> {
+        match value.to_ascii_lowercase().as_str() {
+            "json" => Ok(Self::Json),
+            "csv" => Ok(Self::Csv),
+            _ => Err(VisionError::InvalidInput(format!(
+                "Invalid `--format` value `{value}`: expected `json` or `csv`"
+            ))),
+        }
+    }
+}
+
 /// CLI options for the `extract` subcommand.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractArgs {
@@ -463,6 +483,7 @@ pub struct ExtractArgs {
     pub include_descriptors: bool,
     pub upsample_first_octave: bool,
     pub pretty: bool,
+    pub format: OutputFormat,
 }
 
 /// CLI options for the `match` subcommand.
@@ -479,6 +500,7 @@ pub struct MatchArgs {
     pub ransac_threshold: f32,
     pub upsample_first_octave: bool,
     pub pretty: bool,
+    pub format: OutputFormat,
 }
 
 /// CLI options for the `visualize` subcommand.
@@ -638,7 +660,8 @@ ARGS:
   <IMAGE>                       Path to input PNG/JPEG/WebP/TIFF image
 
 OPTIONS:
-  -o, --output <FILE>           Write JSON output to FILE instead of stdout
+  -o, --output <FILE>           Write output to FILE instead of stdout
+      --format <json|csv>       Output format: json (default) or csv
       --octaves <N>             Number of scale-space octaves (1..=8, default: 3)
       --scales <N>              DoG scales per octave (3..=10, default: 3)
       --threshold <FLOAT>       Contrast threshold in (0.0, 1.0] (default: 0.015)
@@ -660,7 +683,8 @@ ARGS:
   <TARGET>                      Path to target image
 
 OPTIONS:
-  -o, --output <FILE>           Write JSON output to FILE instead of stdout
+  -o, --output <FILE>           Write output to FILE instead of stdout
+      --format <json|csv>       Output format: json (default) or csv
       --octaves <N>             Number of scale-space octaves (1..=8, default: 3)
       --scales <N>              DoG scales per octave (3..=10, default: 3)
       --threshold <FLOAT>       Contrast threshold in (0.0, 1.0] (default: 0.015)
@@ -890,6 +914,7 @@ fn parse_extract_args(args: &[String]) -> Result<CliCommand, VisionError> {
     let mut include_descriptors = false;
     let mut upsample_first_octave = DEFAULT_UPSAMPLE_FIRST_OCTAVE;
     let mut pretty = false;
+    let mut format = OutputFormat::Json;
     let mut positional_only = false;
     let mut i = 0;
 
@@ -953,6 +978,10 @@ fn parse_extract_args(args: &[String]) -> Result<CliCommand, VisionError> {
                     }
                     pretty = true;
                 }
+                "--format" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    format = OutputFormat::parse(&val)?;
+                }
                 _ => {
                     return Err(VisionError::InvalidInput(format!(
                         "Unknown option `{flag}` for `extract`. Run `extract --help` for usage."
@@ -988,6 +1017,7 @@ fn parse_extract_args(args: &[String]) -> Result<CliCommand, VisionError> {
         include_descriptors,
         upsample_first_octave,
         pretty,
+        format,
     }))
 }
 
@@ -1003,6 +1033,7 @@ fn parse_match_args(args: &[String]) -> Result<CliCommand, VisionError> {
     let mut ransac_threshold = DEFAULT_RANSAC_REPROJ_THRESHOLD;
     let mut upsample_first_octave = DEFAULT_UPSAMPLE_FIRST_OCTAVE;
     let mut pretty = false;
+    let mut format = OutputFormat::Json;
     let mut positional_only = false;
     let mut i = 0;
 
@@ -1074,6 +1105,10 @@ fn parse_match_args(args: &[String]) -> Result<CliCommand, VisionError> {
                     }
                     pretty = true;
                 }
+                "--format" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    format = OutputFormat::parse(&val)?;
+                }
                 _ => {
                     return Err(VisionError::InvalidInput(format!(
                         "Unknown option `{flag}` for `match`. Run `match --help` for usage."
@@ -1115,6 +1150,7 @@ fn parse_match_args(args: &[String]) -> Result<CliCommand, VisionError> {
         ransac_threshold,
         upsample_first_octave,
         pretty,
+        format,
     }))
 }
 
@@ -1293,6 +1329,7 @@ fn parse_pair_visual_args(
             ransac_threshold,
             upsample_first_octave: DEFAULT_UPSAMPLE_FIRST_OCTAVE,
             pretty: false,
+            format: OutputFormat::Json,
         },
         output_path,
     ))
@@ -1692,8 +1729,11 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 args.upsample_first_octave,
                 false,
             )?;
-            let json = serialize_json(&response, args.pretty)?;
-            write_json_output(&json, args.output_path.as_ref(), stdout)?;
+            let output = match args.format {
+                OutputFormat::Json => serialize_json(&response, args.pretty)?,
+                OutputFormat::Csv => serialize_extract_csv(&response),
+            };
+            write_json_output(&output, args.output_path.as_ref(), stdout)?;
             if let Some(out) = &args.output_path {
                 eprintln!(
                     "Extracted {} keypoints ({}x{}) -> {}",
@@ -1736,8 +1776,11 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                     enforce_pixel_cap: false,
                 },
             )?;
-            let json = serialize_json(&response, args.pretty)?;
-            write_json_output(&json, args.output_path.as_ref(), stdout)?;
+            let output = match args.format {
+                OutputFormat::Json => serialize_json(&response, args.pretty)?,
+                OutputFormat::Csv => serialize_match_csv(&response),
+            };
+            write_json_output(&output, args.output_path.as_ref(), stdout)?;
             if let Some(out) = &args.output_path {
                 eprintln!(
                     "Matched {} inliers (of {} raw matches) -> {}",
@@ -1940,8 +1983,136 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
     }
 }
 
+/// Serializes a `FeatureResponse` as a flat CSV table (`x,y,scale,orientation,response`).
+pub fn serialize_extract_csv(response: &FeatureResponse) -> String {
+    use std::fmt::Write;
+    let mut out = String::from("x,y,scale,orientation,response\n");
+    if let Some(features) = &response.features {
+        for f in features {
+            let _ = writeln!(
+                out,
+                "{},{},{},{},{}",
+                f.x, f.y, f.scale, f.orientation, f.response
+            );
+        }
+    } else {
+        for kp in &response.keypoints {
+            let _ = writeln!(out, "{},{},{},,{}", kp.x, kp.y, kp.scale, kp.response);
+        }
+    }
+    out
+}
+
+/// Serializes a `MatchFeaturesResponse` as a flat CSV table of matched correspondences.
+pub fn serialize_match_csv(response: &MatchFeaturesResponse) -> String {
+    use std::fmt::Write;
+    let mut out = String::from(
+        "query_index,target_index,query_x,query_y,target_x,target_y,distance,ratio,dx,dy\n",
+    );
+    for m in &response.matches {
+        let _ = writeln!(
+            out,
+            "{},{},{},{},{},{},{},{},{},{}",
+            m.query_index,
+            m.target_index,
+            m.query_point.0,
+            m.query_point.1,
+            m.target_point.0,
+            m.target_point.1,
+            m.distance,
+            m.ratio,
+            m.displacement.0,
+            m.displacement.1
+        );
+    }
+    out
+}
+
 /// Convenience entry helper writing CLI output directly to standard output.
 pub fn execute_cli_to_stdout(cmd: &CliCommand) -> Result<(), VisionError> {
     let mut stdout = io::stdout().lock();
     execute_cli_command(cmd, &mut stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_format_flag_extract_and_match() {
+        let cmd = parse_cli_args(["extract", "img.png", "--format", "csv"])
+            .expect("extract --format csv should parse");
+        match cmd {
+            CliCommand::Extract(args) => assert_eq!(args.format, OutputFormat::Csv),
+            other => panic!("Unexpected command: {other:?}"),
+        }
+
+        let cmd = parse_cli_args(["match", "q.png", "t.png", "--format=CSV"])
+            .expect("match --format=CSV should parse");
+        match cmd {
+            CliCommand::Match(args) => assert_eq!(args.format, OutputFormat::Csv),
+            other => panic!("Unexpected command: {other:?}"),
+        }
+
+        let err = parse_cli_args(["extract", "img.png", "--format", "xml"]).unwrap_err();
+        assert!(matches!(err, VisionError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_csv_serialization_extract_and_match() {
+        let resp = FeatureResponse {
+            width: 64,
+            height: 64,
+            octaves: 3,
+            scales: 3,
+            threshold: 0.015,
+            keypoint_count: 1,
+            keypoints: vec![Keypoint {
+                x: 12.5,
+                y: 24.0,
+                scale: 1.6,
+                response: 0.04,
+                octave: 0,
+                layer: 1,
+            }],
+            features: None,
+        };
+        let csv = serialize_extract_csv(&resp);
+        assert_eq!(csv, "x,y,scale,orientation,response\n12.5,24,1.6,,0.04\n");
+
+        let match_resp = MatchFeaturesResponse {
+            query_dimensions: (64, 64),
+            target_dimensions: (64, 64),
+            query_feature_count: 1,
+            target_feature_count: 1,
+            ratio_threshold: 0.75,
+            ransac_enabled: true,
+            ransac_threshold: 3.0,
+            transform: None,
+            homography: None,
+            tracking: TrackingSummary {
+                match_count: 1,
+                raw_match_count: 1,
+                inlier_ratio: 1.0,
+                mean_displacement: (2.0, -1.0),
+                median_displacement: (2.0, -1.0),
+                mean_scale_ratio: 1.0,
+                mean_rotation_deg: 0.0,
+            },
+            matches: vec![FeatureMatch {
+                query_index: 0,
+                target_index: 3,
+                query_point: (10.0, 20.0),
+                target_point: (12.0, 19.0),
+                distance: 0.25,
+                ratio: 0.5,
+                displacement: (2.0, -1.0),
+            }],
+        };
+        let match_csv = serialize_match_csv(&match_resp);
+        assert_eq!(
+            match_csv,
+            "query_index,target_index,query_x,query_y,target_x,target_y,distance,ratio,dx,dy\n0,3,10,20,12,19,0.25,0.5,2,-1\n"
+        );
+    }
 }
