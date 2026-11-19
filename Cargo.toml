@@ -2,6 +2,7 @@
 name = "pure-sift"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Pure-Rust SIFT feature extraction (Lowe 2004, expired patent US6711293B1), RANSAC/Homography alignment, visual catalog search, and HTTP workbench with zero unsafe code."
 repository = "https://github.com/dannkkie/pure-sift"
