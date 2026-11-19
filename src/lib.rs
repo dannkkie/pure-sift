@@ -13,11 +13,12 @@ pub use cli::{
     AlignArgs, CatalogBuildArgs, CatalogSearchArgs, CatalogSearchOptions, CatalogSearchResponse,
     CliCommand, DEFAULT_OCTAVES, DEFAULT_SCALES, ExtractArgs, FeatureResponse, MAX_IMAGE_DIM,
     MAX_IMAGE_PIXELS, MAX_OCTAVES, MAX_SCALES, MIN_IMAGE_DIM, MIN_OCTAVES, MIN_SCALES, MatchArgs,
-    MatchFeaturesResponse, PairPipelineOptions, VisionError, VisualizeArgs, VisualizeMatchesArgs,
-    decode_validated_dynamic_image, decode_validated_luma8, execute_cli_command,
-    execute_cli_to_stdout, map_image_prefix, parse_cli_args, run_align_images_rgba,
-    run_catalog_search_from_bytes, run_extract_from_bytes, run_match_from_bytes,
-    run_visualize_features_rgba, run_visualize_matches_rgba, save_rgba_output, serialize_json,
+    MatchFeaturesResponse, OutputFormat, PairPipelineOptions, VisionError, VisualizeArgs,
+    VisualizeMatchesArgs, decode_validated_dynamic_image, decode_validated_luma8,
+    execute_cli_command, execute_cli_to_stdout, map_image_prefix, parse_cli_args,
+    run_align_images_rgba, run_catalog_search_from_bytes, run_extract_from_bytes,
+    run_match_from_bytes, run_visualize_features_rgba, run_visualize_matches_rgba,
+    save_rgba_output, serialize_extract_csv, serialize_json, serialize_match_csv,
     validate_match_params, validate_pipeline_params, write_json_output,
 };
 pub use pipeline::{

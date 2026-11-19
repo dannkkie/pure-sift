@@ -81,11 +81,13 @@ cargo run --release -- serve --bind 127.0.0.1:3000
 # Build release binary
 cargo build --release
 
-# Extract DoG keypoints & 128-D SIFT descriptors
+# Extract DoG keypoints & 128-D SIFT descriptors (JSON or flat CSV)
 ./target/release/pure-sift extract image.jpg --descriptors --pretty -o features.json
+./target/release/pure-sift extract image.jpg --descriptors --format csv -o features.csv
 
 # Match features & estimate 2D Similarity + 3x3 Homography transforms
 ./target/release/pure-sift match query.jpg target.jpg --pretty -o matches.json
+./target/release/pure-sift match query.jpg target.jpg --format csv -o matches.csv
 
 # Render keypoint overlay or side-by-side inlier matches
 ./target/release/pure-sift visualize image.jpg -o keypoints.png
@@ -98,6 +100,10 @@ cargo build --release
 ./target/release/pure-sift catalog-build ./photos -o catalog.json
 ./target/release/pure-sift catalog-search catalog.json probe.jpg --pretty
 ```
+
+**CSV Output Headers (`--format csv`):**
+- `extract`: `x,y,scale,orientation,response` (`orientation` is empty when `--descriptors` is omitted)
+- `match`: `query_index,target_index,query_x,query_y,target_x,target_y,distance,ratio,dx,dy`
 
 ---
 
