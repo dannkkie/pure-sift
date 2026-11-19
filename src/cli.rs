@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     catalog::{CatalogSearchHit, DEFAULT_CATALOG_SHORTLIST, DEFAULT_CATALOG_TOP_K, FeatureCatalog},
+    geometry::{
+        FundamentalMatrix, FundamentalRansacOptions, GricComparison,
+        estimate_fundamental_ransac_with_options, select_model_gric,
+    },
     pipeline::{
         DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO, DEFAULT_RANSAC_REPROJ_THRESHOLD,
         DEFAULT_UPSAMPLE_FIRST_OCTAVE, FeatureMatch, Homography, Homography2D, Keypoint,
@@ -70,6 +74,12 @@ pub struct MatchFeaturesResponse {
     pub transform: Option<SimilarityTransform2D>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub homography: Option<Homography2D>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fundamental: Option<FundamentalMatrix>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fundamental_inlier_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<GricComparison>,
     pub tracking: TrackingSummary,
     pub matches: Vec<FeatureMatch>,
 }
@@ -301,18 +311,36 @@ pub fn run_match_from_bytes(
     let raw_matches = matcher.match_(&query_features, &target_features);
     let tracking = summarize_tracking(&query_features, &target_features, &raw_matches);
 
-    let (matches, transform, homography) = if opts.ransac_enabled {
-        let (sim_inliers, sim_tf) = Homography::estimate_similarity(&raw_matches, opts.ransac);
-        let (hom_inliers, hom_tf) = Homography::estimate(&raw_matches, opts.ransac);
-        let best_inliers = if hom_inliers.len() > sim_inliers.len() {
-            hom_inliers
+    let (matches, transform, homography, fundamental, fundamental_inlier_count, model_selection) =
+        if opts.ransac_enabled {
+            let (sim_inliers, sim_tf) = Homography::estimate_similarity(&raw_matches, opts.ransac);
+            let (hom_inliers, hom_tf) = Homography::estimate(&raw_matches, opts.ransac);
+            let (fund_inliers, fund_tf) = if raw_matches.len() >= 8 {
+                let (fi, f) = estimate_fundamental_ransac_with_options(
+                    &raw_matches,
+                    FundamentalRansacOptions::default()
+                        .sampson_threshold(f64::from(opts.ransac.reproj_threshold).min(3.0)),
+                );
+                let count = f.as_ref().map(|_| fi.len());
+                (count, f)
+            } else {
+                (None, None)
+            };
+            let gric = select_model_gric(
+                &raw_matches,
+                hom_tf.as_ref(),
+                fund_tf.as_ref(),
+                f64::from(opts.ransac.reproj_threshold).max(1.0),
+            );
+            let best_inliers = if hom_inliers.len() > sim_inliers.len() {
+                hom_inliers
+            } else {
+                sim_inliers
+            };
+            (best_inliers, sim_tf, hom_tf, fund_tf, fund_inliers, gric)
         } else {
-            sim_inliers
+            (raw_matches, None, None, None, None, None)
         };
-        (best_inliers, sim_tf, hom_tf)
-    } else {
-        (raw_matches, None, None)
-    };
 
     Ok(MatchFeaturesResponse {
         query_dimensions: (q_w, q_h),
@@ -324,6 +352,9 @@ pub fn run_match_from_bytes(
         ransac_threshold: opts.ransac.reproj_threshold,
         transform,
         homography,
+        fundamental,
+        fundamental_inlier_count,
+        model_selection,
         tracking,
         matches,
     })
@@ -2094,6 +2125,9 @@ mod tests {
             ransac_threshold: 3.0,
             transform: None,
             homography: None,
+            fundamental: None,
+            fundamental_inlier_count: None,
+            model_selection: None,
             tracking: TrackingSummary {
                 match_count: 1,
                 raw_match_count: 1,

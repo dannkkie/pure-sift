@@ -1827,7 +1827,7 @@ pub fn match_descriptors(
 
 /// Deterministic 64-bit SplitMix64 generator for reproducible RANSAC pair sampling.
 #[inline]
-fn splitmix64_next(state: &mut u64) -> u64 {
+pub(crate) fn splitmix64_next(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -1971,7 +1971,7 @@ fn adaptive_ransac_iters(
 
 /// Builds a normalized cumulative distribution function (CDF) over `matches` weighted by
 /// `1 / ratio.max(0.05)` so all matches can be sampled while prioritizing high-confidence ones.
-fn build_ratio_weighted_cdf(matches: &[FeatureMatch]) -> Vec<f64> {
+pub(crate) fn build_ratio_weighted_cdf(matches: &[FeatureMatch]) -> Vec<f64> {
     let mut cdf = Vec::with_capacity(matches.len());
     let mut acc = 0.0f64;
     for m in matches {
@@ -1996,7 +1996,7 @@ fn build_ratio_weighted_cdf(matches: &[FeatureMatch]) -> Vec<f64> {
 }
 
 #[inline]
-fn sample_weighted_index(cdf: &[f64], rng_state: &mut u64) -> usize {
+pub(crate) fn sample_weighted_index(cdf: &[f64], rng_state: &mut u64) -> usize {
     // Map u64 to [0, 1)
     let u = ((splitmix64_next(rng_state) >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
     cdf.partition_point(|&c| c < u)
