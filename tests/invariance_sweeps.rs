@@ -215,3 +215,30 @@ fn test_rotation_sweep_invariance() {
         );
     }
 }
+
+#[cfg(feature = "rayon")]
+#[test]
+fn test_parallel_extract_is_deterministic_across_thread_counts() {
+    let img = image::ImageReader::open("docs/samples/aerial_west.jpg")
+        .expect("Failed to open docs/samples/aerial_west.jpg")
+        .decode()
+        .expect("Failed to decode aerial_west.jpg")
+        .to_luma8();
+    let arr = luma_to_array2(&img);
+
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let pool4 = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+
+    let feats_1 = pool1.install(|| extract_sift_features(&arr, 3, 3, DEFAULT_CONTRAST_THRESHOLD));
+    let feats_4 = pool4.install(|| extract_sift_features(&arr, 3, 3, DEFAULT_CONTRAST_THRESHOLD));
+
+    assert!(!feats_1.is_empty());
+    assert_eq!(feats_1.len(), feats_4.len());
+    assert_eq!(feats_1, feats_4);
+}

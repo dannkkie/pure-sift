@@ -5,12 +5,13 @@
 //!
 //! Run with `cargo bench --bench sift_pipeline`.
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use image::{GrayImage, Luma};
 use pure_sift::{
     DEFAULT_CONTRAST_THRESHOLD, DEFAULT_MATCH_RATIO, DEFAULT_RANSAC_REPROJ_THRESHOLD, FeatureMatch,
-    SIFT_DESCRIPTOR_LEN, SiftFeature, estimate_homography_ransac, extract_sift_features,
-    luma_to_array2, match_descriptors,
+    SIFT_DESCRIPTOR_LEN, SiftFeature, compute_sift_descriptors, estimate_homography_ransac,
+    extract_extrema, extract_sift_features, gaussian_blur, generate_dog_space, luma_to_array2,
+    match_descriptors,
 };
 
 /// Deterministic xorshift64* generator so every bench run sees identical data.
@@ -30,12 +31,12 @@ impl Rng {
     }
 }
 
-/// Synthetic 512x512 luma8 image: two overlaid sinusoid textures so the DoG
-/// detector finds a stable, non-trivial set of extrema on every run.
-fn synthetic_luma8(size: u32) -> GrayImage {
-    GrayImage::from_fn(size, size, |x, y| {
-        let fx = x as f32 / size as f32;
-        let fy = y as f32 / size as f32;
+/// Synthetic luma8 image of arbitrary `(width, height)`: two overlaid sinusoid textures
+/// so the DoG detector finds a stable, non-trivial set of extrema on every run.
+fn synthetic_luma8_rect(width: u32, height: u32) -> GrayImage {
+    GrayImage::from_fn(width, height, |x, y| {
+        let fx = x as f32 / width as f32;
+        let fy = y as f32 / height as f32;
         let wave_a =
             (fx * std::f32::consts::TAU * 8.0).sin() * (fy * std::f32::consts::TAU * 8.0).cos();
         let wave_b = (fx * std::f32::consts::TAU * 17.0 + 1.3).sin()
@@ -43,6 +44,10 @@ fn synthetic_luma8(size: u32) -> GrayImage {
         let value = (0.5 + 0.22 * wave_a + 0.13 * wave_b).clamp(0.0, 1.0);
         Luma([(value * 255.0) as u8])
     })
+}
+
+fn synthetic_luma8(size: u32) -> GrayImage {
+    synthetic_luma8_rect(size, size)
 }
 
 /// Deterministic synthetic SIFT features with 128-D descriptors.
@@ -128,10 +133,56 @@ fn bench_estimate_homography_ransac(c: &mut Criterion) {
     });
 }
 
+/// Pipeline stage benchmarks across 0.3 MP (640x480), 2 MP (1920x1080), and 10 MP (3840x2600).
+fn bench_pipeline_stages_megapixels(c: &mut Criterion) {
+    let sizes = [
+        ("0.3MP_640x480", 640u32, 480u32),
+        ("2MP_1920x1080", 1920u32, 1080u32),
+        ("10MP_3840x2600", 3840u32, 2600u32),
+    ];
+
+    let mut group = c.benchmark_group("stages");
+    group.sample_size(10);
+
+    for &(label, w, h) in &sizes {
+        let img = luma_to_array2(&synthetic_luma8_rect(w, h));
+        let dog_space = generate_dog_space(&img, 4, 3);
+        let keypoints = extract_extrema(&dog_space, DEFAULT_CONTRAST_THRESHOLD);
+
+        group.bench_with_input(BenchmarkId::new("gaussian_blur", label), &img, |b, img| {
+            b.iter(|| gaussian_blur(std::hint::black_box(img), 1.6))
+        });
+        group.bench_with_input(
+            BenchmarkId::new("generate_dog_space", label),
+            &img,
+            |b, img| b.iter(|| generate_dog_space(std::hint::black_box(img), 4, 3)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("extract_extrema", label),
+            &dog_space,
+            |b, dog| {
+                b.iter(|| extract_extrema(std::hint::black_box(dog), DEFAULT_CONTRAST_THRESHOLD))
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("compute_sift_descriptors", label),
+            &keypoints,
+            |b, kps| {
+                b.iter(|| {
+                    compute_sift_descriptors(std::hint::black_box(&img), std::hint::black_box(kps))
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_extract_sift_features,
     bench_match_descriptors,
-    bench_estimate_homography_ransac
+    bench_estimate_homography_ransac,
+    bench_pipeline_stages_megapixels
 );
 criterion_main!(benches);

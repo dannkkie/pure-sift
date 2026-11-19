@@ -7,6 +7,7 @@ use std::{
 };
 
 use image::{DynamicImage, ImageFormat, ImageReader, RgbaImage};
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -1913,8 +1914,11 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
 
             type IndexedEntryTuple = (String, usize, usize, Vec<SiftFeature>);
             // Extract SIFT features across all images in parallel using Rayon
-            let indexed_entries: Result<Vec<IndexedEntryTuple>, VisionError> = image_paths
-                .par_iter()
+            #[cfg(feature = "rayon")]
+            let path_iter = image_paths.par_iter();
+            #[cfg(not(feature = "rayon"))]
+            let path_iter = image_paths.iter();
+            let indexed_entries: Result<Vec<IndexedEntryTuple>, VisionError> = path_iter
                 .map(|path| {
                     let raw_bytes = fs::read(path).map_err(|e| {
                         VisionError::Io(format!("Failed to read `{}`: {e}", path.display()))
