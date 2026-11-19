@@ -28,7 +28,7 @@ jobs:
             cargo check --manifest-path wasm-demo/Cargo.toml --target wasm32-unknown-unknown
           fi
 
-  test:
+  test-matrix:
     strategy:
       fail-fast: false
       matrix:
@@ -55,3 +55,17 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories licenses bans sources
+
+  test:
+    needs: [lint-and-wasm, test-matrix, deny]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all CI jobs succeeded
+        run: |
+          if [ "${{ needs.lint-and-wasm.result }}" != "success" ] || \
+             [ "${{ needs.test-matrix.result }}" != "success" ] || \
+             [ "${{ needs.deny.result }}" != "success" ]; then
+            echo "One or more CI jobs failed"
+            exit 1
+          fi
