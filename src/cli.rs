@@ -24,6 +24,7 @@ use crate::{
         TrackingSummary, compute_sift_descriptors, detect_keypoints_with_options,
         extract_sift_features, luma_to_array2, summarize_tracking,
     },
+    stitch::{BlendMode, PanoramaOptions, ProjectionMode, stitch_panorama},
     visualize::{
         draw_keypoints_overlay, draw_matches_side_by_side, resolve_safe_alignment_homography,
         warp_and_stitch,
@@ -608,6 +609,21 @@ pub struct CatalogSearchResponse {
     pub hits: Vec<CatalogSearchHit>,
 }
 
+/// CLI options for the multi-image `panorama` subcommand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanoramaArgs {
+    pub image_paths: Vec<PathBuf>,
+    pub output_path: PathBuf,
+    pub octaves: usize,
+    pub scales: usize,
+    pub threshold: f32,
+    pub ratio: f32,
+    pub ransac_threshold: f32,
+    pub projection: ProjectionMode,
+    pub blend: BlendMode,
+    pub exposure_compensation: bool,
+}
+
 /// Parsed CLI command dispatched by `main`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CliCommand {
@@ -617,6 +633,7 @@ pub enum CliCommand {
     Visualize(VisualizeArgs),
     VisualizeMatches(VisualizeMatchesArgs),
     Align(AlignArgs),
+    Panorama(PanoramaArgs),
     CatalogBuild(CatalogBuildArgs),
     CatalogSearch(CatalogSearchArgs),
     Help(Option<String>),
@@ -639,6 +656,7 @@ COMMANDS:
   visualize <IMAGE>                 Draw detected keypoints (scale circles & orientation) to PNG/JPEG
   visualize-matches <Q> <T>         Draw side-by-side RANSAC inlier match lines to PNG/JPEG
   align <QUERY> <TARGET>            Warp & feather-blend QUERY onto TARGET via Homography (alias: stitch)
+  panorama <IMG1> <IMG2> [...]      Stitch N overlapping images with exposure compensation & multi-band blending
   catalog-build <PATH...>           Index a folder or list of images into a SIFT search catalog JSON
   catalog-search <CATALOG> <QUERY>  Search a SIFT catalog for geometric matches to QUERY
   help [COMMAND]                    Show help for a command
@@ -653,6 +671,7 @@ EXAMPLES:
   pure-sift match buy-cheap.jpg buy-cheap-cropped.jpg --pretty -o matches.json
   pure-sift visualize buy-cheap.jpg --threshold 0.03 -o keypoints.png
   pure-sift align buy-cheap.jpg buy-cheap-cropped.jpg --threshold 0.03 -o aligned.png
+  pure-sift panorama img1.jpg img2.jpg img3.jpg -o panorama.png
   pure-sift catalog-build ./photos -o catalog.json
   pure-sift catalog-search catalog.json buy-cheap-cropped.jpg --pretty
 ",
@@ -788,6 +807,31 @@ OPTIONS:
   -h, --help                    Print help information
 ",
         ),
+        "panorama" => Some(
+            "\
+Stitch 2 or more overlapping images into a panorama with MST homography chaining, exposure compensation, and multi-band blending.
+
+USAGE:
+  pure-sift panorama <IMG1> <IMG2> [<IMG3> ...] [OPTIONS]
+
+ARGS:
+  <IMG...>                      Paths to overlapping input images (2 or more)
+
+OPTIONS:
+  -o, --output <FILE>           Output panorama image path (default: panorama.png)
+      --projection <MODE>       Projection geometry: planar (default) or cylindrical
+      --focal <PX>              Focal length in pixels for cylindrical projection (default: auto)
+      --blend <MODE>            Blend mode: multiband (default) or feather
+      --blend-levels <N>        Laplacian pyramid levels for multiband blending (1..=6, default: 4)
+      --no-exposure             Disable exposure/gain compensation
+      --octaves <N>             Number of scale-space octaves (1..=8, default: 3)
+      --scales <N>              DoG scales per octave (3..=10, default: 3)
+      --threshold <FLOAT>       Contrast threshold in (0.0, 1.0] (default: 0.015)
+      --ratio <FLOAT>           Lowe's ratio threshold in (0.0, 1.0] (default: 0.75)
+      --ransac-threshold <PX>   RANSAC reprojection error threshold in px (0.5..=100.0, default: 3.0)
+  -h, --help                    Print help information
+",
+        ),
         "catalog-build" => Some(
             "\
 Index a folder or list of images in parallel into a searchable 128-D SIFT catalog JSON.
@@ -870,6 +914,7 @@ where
         "visualize" => parse_visualize_args(&raw_args[1..]),
         "visualize-matches" => parse_visualize_matches_args(&raw_args[1..]),
         "align" | "stitch" => parse_align_args(&raw_args[1..]),
+        "panorama" => parse_panorama_args(&raw_args[1..]),
         "catalog-build" => parse_catalog_build_args(&raw_args[1..]),
         "catalog-search" => parse_catalog_search_args(&raw_args[1..]),
         other => Err(VisionError::InvalidInput(format!(
@@ -1404,6 +1449,139 @@ fn parse_align_args(args: &[String]) -> Result<CliCommand, VisionError> {
         }
         Err(e) => Err(e),
     }
+}
+
+fn parse_panorama_args(args: &[String]) -> Result<CliCommand, VisionError> {
+    let mut image_paths: Vec<PathBuf> = Vec::new();
+    let mut output_path = PathBuf::from("panorama.png");
+    let mut octaves = DEFAULT_OCTAVES;
+    let mut scales = DEFAULT_SCALES;
+    let mut threshold = DEFAULT_CONTRAST_THRESHOLD;
+    let mut ratio = DEFAULT_MATCH_RATIO;
+    let mut ransac_threshold = DEFAULT_RANSAC_REPROJ_THRESHOLD;
+    let mut projection_mode = "planar".to_string();
+    let mut focal_px: f32 = 600.0;
+    let mut blend_mode = "multiband".to_string();
+    let mut blend_levels: usize = 4;
+    let mut exposure_compensation = true;
+    let mut positional_only = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = &args[i];
+        if !positional_only && arg == "--" {
+            positional_only = true;
+            i += 1;
+            continue;
+        }
+
+        if !positional_only && arg.starts_with('-') && arg != "-" {
+            let (flag, inline_val) = split_flag_value(arg);
+            match flag {
+                "-h" | "--help" => return Ok(CliCommand::Help(Some("panorama".to_string()))),
+                "-o" | "--output" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    output_path = PathBuf::from(val);
+                }
+                "--projection" => {
+                    projection_mode =
+                        take_value(flag, inline_val, args, &mut i)?.to_ascii_lowercase();
+                }
+                "--focal" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    focal_px = parse_typed(flag, &val)?;
+                }
+                "--blend" => {
+                    blend_mode = take_value(flag, inline_val, args, &mut i)?.to_ascii_lowercase();
+                }
+                "--blend-levels" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    blend_levels = parse_typed(flag, &val)?;
+                }
+                "--no-exposure" => {
+                    if inline_val.is_some() {
+                        return Err(VisionError::InvalidInput(format!(
+                            "Flag `{flag}` does not take a value"
+                        )));
+                    }
+                    exposure_compensation = false;
+                }
+                "--octaves" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    octaves = parse_typed(flag, &val)?;
+                }
+                "--scales" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    scales = parse_typed(flag, &val)?;
+                }
+                "--threshold" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    threshold = parse_typed(flag, &val)?;
+                }
+                "--ratio" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    ratio = parse_typed(flag, &val)?;
+                }
+                "--ransac-threshold" => {
+                    let val = take_value(flag, inline_val, args, &mut i)?;
+                    ransac_threshold = parse_typed(flag, &val)?;
+                }
+                _ => {
+                    return Err(VisionError::InvalidInput(format!(
+                        "Unknown option `{flag}` for `panorama`. Run `panorama --help` for usage."
+                    )));
+                }
+            }
+        } else {
+            image_paths.push(PathBuf::from(arg));
+        }
+        i += 1;
+    }
+
+    if image_paths.len() < 2 {
+        return Err(VisionError::InvalidInput(
+            "Missing required `<IMG1> <IMG2> [...]` paths for `panorama`. Run `panorama --help` for usage."
+                .to_string(),
+        ));
+    }
+
+    let projection = match projection_mode.as_str() {
+        "planar" => ProjectionMode::Planar,
+        "cylindrical" => ProjectionMode::Cylindrical { focal_px },
+        other => {
+            return Err(VisionError::InvalidInput(format!(
+                "Invalid `--projection` `{other}`: expected `planar` or `cylindrical`"
+            )));
+        }
+    };
+
+    let blend = match blend_mode.as_str() {
+        "multiband" | "multi-band" => BlendMode::MultiBand {
+            levels: blend_levels.clamp(1, 6),
+        },
+        "feather" => BlendMode::Feather,
+        other => {
+            return Err(VisionError::InvalidInput(format!(
+                "Invalid `--blend` `{other}`: expected `multiband` or `feather`"
+            )));
+        }
+    };
+
+    validate_pipeline_params(octaves, scales, threshold)?;
+    validate_match_params(ratio, ransac_threshold)?;
+
+    Ok(CliCommand::Panorama(PanoramaArgs {
+        image_paths,
+        output_path,
+        octaves,
+        scales,
+        threshold,
+        ratio,
+        ransac_threshold,
+        projection,
+        blend,
+        exposure_compensation,
+    }))
 }
 
 fn parse_catalog_build_args(args: &[String]) -> Result<CliCommand, VisionError> {
@@ -2013,6 +2191,42 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 );
             }
             Ok(())
+        }
+        CliCommand::Panorama(args) => {
+            let mut decoded = Vec::with_capacity(args.image_paths.len());
+            for path in &args.image_paths {
+                let raw = fs::read(path).map_err(|e| {
+                    VisionError::Io(format!("Failed to read `{}`: {e}", path.display()))
+                })?;
+                let dyn_img = decode_validated_dynamic_image(&raw, false)
+                    .map_err(|e| map_image_prefix(&format!("Image `{}`", path.display()), e))?;
+                decoded.push(dyn_img);
+            }
+            let opts = PanoramaOptions {
+                octaves: args.octaves,
+                scales: args.scales,
+                threshold: args.threshold,
+                ratio: args.ratio,
+                ransac_threshold: args.ransac_threshold,
+                projection: args.projection,
+                blend: args.blend,
+                exposure_compensation: args.exposure_compensation,
+                ..PanoramaOptions::default()
+            };
+            let result =
+                stitch_panorama(&decoded, &opts).map_err(VisionError::UnprocessableImage)?;
+            save_rgba_output(&result.image, &args.output_path)?;
+            writeln!(
+                stdout,
+                "Stitched {}/{} images (ref={}, canvas={}x{}) -> {}",
+                result.registered_indices.len(),
+                args.image_paths.len(),
+                result.reference_index,
+                result.image.width(),
+                result.image.height(),
+                args.output_path.display()
+            )
+            .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}")))
         }
         CliCommand::Serve { .. } => Ok(()),
     }

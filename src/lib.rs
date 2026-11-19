@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod cli;
 pub mod geometry;
 pub mod pipeline;
+pub mod stitch;
 pub mod visualize;
 
 pub use catalog::{
@@ -14,8 +15,8 @@ pub use cli::{
     AlignArgs, CatalogBuildArgs, CatalogSearchArgs, CatalogSearchOptions, CatalogSearchResponse,
     CliCommand, DEFAULT_OCTAVES, DEFAULT_SCALES, ExtractArgs, FeatureResponse, MAX_IMAGE_DIM,
     MAX_IMAGE_PIXELS, MAX_OCTAVES, MAX_SCALES, MIN_IMAGE_DIM, MIN_OCTAVES, MIN_SCALES, MatchArgs,
-    MatchFeaturesResponse, OutputFormat, PairPipelineOptions, VisionError, VisualizeArgs,
-    VisualizeMatchesArgs, decode_validated_dynamic_image, decode_validated_luma8,
+    MatchFeaturesResponse, OutputFormat, PairPipelineOptions, PanoramaArgs, VisionError,
+    VisualizeArgs, VisualizeMatchesArgs, decode_validated_dynamic_image, decode_validated_luma8,
     execute_cli_command, execute_cli_to_stdout, map_image_prefix, parse_cli_args,
     run_align_images_rgba, run_catalog_search_from_bytes, run_extract_from_bytes,
     run_match_from_bytes, run_visualize_features_rgba, run_visualize_matches_rgba,
@@ -43,6 +44,10 @@ pub use pipeline::{
     gaussian_kernel_1d, gaussian_kernel_2d, generate_dog_space, generate_dog_space_with_options,
     luma_to_array2, match_descriptors, match_descriptors_with_options, quantize_descriptor_u8,
     summarize_tracking, to_rootsift_descriptor, upsample_2x_bilinear,
+};
+pub use stitch::{
+    BlendMode, PanoramaOptions, PanoramaResult, ProjectionMode, solve_exposure_gains,
+    stitch_panorama, warp_image_cylindrical,
 };
 pub use visualize::{
     MAX_WARP_DIM, MAX_WARP_PIXELS, blend_pixel, draw_keypoints_overlay, draw_matches_side_by_side,
