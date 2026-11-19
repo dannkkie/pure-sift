@@ -37,11 +37,18 @@ jobs:
           WASM_BINDGEN_VER=$(awk '/name = "wasm-bindgen"/{getline; gsub(/"/, "", $3); print $3; exit}' wasm-demo/Cargo.lock)
           cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VER" --locked
           sudo apt-get update && sudo apt-get install -y binaryen
-      - name: Build WASM demo
+      - name: Build scalar WASM fallback bundle
         run: |
           cargo build --manifest-path wasm-demo/Cargo.toml --release --target wasm32-unknown-unknown
           wasm-bindgen --target web --out-dir docs/pkg wasm-demo/target/wasm32-unknown-unknown/release/pure_sift_wasm_demo.wasm
           wasm-opt -Oz -o docs/pkg/pure_sift_wasm_demo_bg.wasm docs/pkg/pure_sift_wasm_demo_bg.wasm
+      - name: Build SIMD128 WASM bundle
+        env:
+          RUSTFLAGS: "-C target-feature=+simd128"
+        run: |
+          cargo build --manifest-path wasm-demo/Cargo.toml --release --target wasm32-unknown-unknown
+          wasm-bindgen --target web --out-dir docs/pkg-simd wasm-demo/target/wasm32-unknown-unknown/release/pure_sift_wasm_demo.wasm
+          wasm-opt -Oz --enable-simd -o docs/pkg-simd/pure_sift_wasm_demo_bg.wasm docs/pkg-simd/pure_sift_wasm_demo_bg.wasm
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
