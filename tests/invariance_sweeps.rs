@@ -141,10 +141,12 @@ fn test_scale_sweep_invariance() {
         );
     }
 
-    assert!(
-        start.elapsed().as_secs_f32() < 30.0,
-        "Scale sweep exceeded 30s CI budget"
-    );
+    if std::env::var_os("LLVM_PROFILE_FILE").is_none() {
+        assert!(
+            start.elapsed().as_secs_f32() < 30.0,
+            "Scale sweep exceeded 30s CI budget"
+        );
+    }
 }
 
 #[test]
@@ -206,8 +208,10 @@ fn test_rotation_sweep_invariance() {
         );
     }
 
-    assert!(
-        start.elapsed().as_secs_f32() < 30.0,
-        "Rotation sweep exceeded 30s CI budget"
-    );
+    if std::env::var_os("LLVM_PROFILE_FILE").is_none() {
+        assert!(
+            start.elapsed().as_secs_f32() < 30.0,
+            "Rotation sweep exceeded 30s CI budget"
+        );
+    }
 }
