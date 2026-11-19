@@ -163,17 +163,25 @@ impl Matcher {
     }
 }
 
+/// Default deterministic RNG seed for 2D Similarity RANSAC (`filter_matches_ransac`).
+pub const DEFAULT_SIMILARITY_RANSAC_SEED: u64 = 0xD1B5_4A32_D192_ED03;
+/// Default deterministic RNG seed for 2D Homography LO-RANSAC (`estimate_homography_ransac`).
+pub const DEFAULT_HOMOGRAPHY_RANSAC_SEED: u64 = 0x517C_C1B7_2722_0A95;
+
 /// Options for RANSAC geometric model estimation.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RansacOptions {
     /// Reprojection error threshold in pixels (`0.5..=100.0`).
     pub reproj_threshold: f32,
+    /// Optional custom deterministic RNG seed (`None` uses the built-in default seeds).
+    pub seed: Option<u64>,
 }
 
 impl Default for RansacOptions {
     fn default() -> Self {
         Self {
             reproj_threshold: DEFAULT_RANSAC_REPROJ_THRESHOLD,
+            seed: None,
         }
     }
 }
@@ -182,6 +190,12 @@ impl RansacOptions {
     /// Sets the RANSAC reprojection threshold in pixels.
     pub fn reproj_threshold(mut self, threshold: f32) -> Self {
         self.reproj_threshold = threshold;
+        self
+    }
+
+    /// Sets a custom deterministic RNG seed for RANSAC sampling.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
         self
     }
 
@@ -206,7 +220,12 @@ impl Homography {
         matches: &[FeatureMatch],
         options: RansacOptions,
     ) -> (Vec<FeatureMatch>, Option<Homography2D>) {
-        estimate_homography_ransac(matches, options.reproj_threshold)
+        match options.seed {
+            Some(seed) => {
+                estimate_homography_ransac_with_seed(matches, options.reproj_threshold, seed)
+            }
+            None => estimate_homography_ransac(matches, options.reproj_threshold),
+        }
     }
 
     /// Estimates a 2D similarity transform and filters inlier matches using RANSAC.
@@ -214,7 +233,10 @@ impl Homography {
         matches: &[FeatureMatch],
         options: RansacOptions,
     ) -> (Vec<FeatureMatch>, Option<SimilarityTransform2D>) {
-        filter_matches_ransac(matches, options.reproj_threshold)
+        match options.seed {
+            Some(seed) => filter_matches_ransac_with_seed(matches, options.reproj_threshold, seed),
+            None => filter_matches_ransac(matches, options.reproj_threshold),
+        }
     }
 }
 
@@ -1932,12 +1954,26 @@ fn sample_weighted_index(cdf: &[f64], rng_state: &mut u64) -> usize {
 }
 
 /// Filters raw SIFT correspondences using deterministic 2D Similarity RANSAC
-/// (translation + rotation + uniform scale) with adaptive termination and Orthogonal Procrustes refinement.
+/// (translation + rotation + uniform scale) with adaptive termination and Orthogonal Procrustes refinement,
+/// using the built-in default RNG seed.
 ///
 /// Returns `(inlier_matches, best_similarity_transform)`.
 pub fn filter_matches_ransac(
     matches: &[FeatureMatch],
     reproj_threshold: f32,
+) -> (Vec<FeatureMatch>, Option<SimilarityTransform2D>) {
+    filter_matches_ransac_with_seed(matches, reproj_threshold, DEFAULT_SIMILARITY_RANSAC_SEED)
+}
+
+/// Filters raw SIFT correspondences using deterministic 2D Similarity RANSAC
+/// (translation + rotation + uniform scale) with adaptive termination, Orthogonal Procrustes refinement,
+/// and a caller-supplied `seed`.
+///
+/// Returns `(inlier_matches, best_similarity_transform)`.
+pub fn filter_matches_ransac_with_seed(
+    matches: &[FeatureMatch],
+    reproj_threshold: f32,
+    seed: u64,
 ) -> (Vec<FeatureMatch>, Option<SimilarityTransform2D>) {
     if matches.is_empty() {
         return (Vec::new(), None);
@@ -1987,7 +2023,7 @@ pub fn filter_matches_ransac(
 
     // Phase B: Adaptive ratio-weighted 2-point similarity hypotheses across all matches
     let cdf = build_ratio_weighted_cdf(matches);
-    let mut rng_state = 0xD1B5_4A32_D192_ED03u64;
+    let mut rng_state = seed;
     let hard_cap = 1000usize;
     let min_iters = 64usize;
     let mut max_iters =
@@ -2513,10 +2549,40 @@ fn local_optimize_homography(
 
 /// Estimates a 3x3 2D projective Homography (`Homography2D`) using deterministic LO-RANSAC
 /// with adaptive termination, ratio-weighted sampling across all matches, collinearity/area
-/// degeneracy filtering, and `f64` Jacobi null-space Normalized DLT.
+/// degeneracy filtering, and `f64` Jacobi null-space Normalized DLT, using the built-in default RNG seed.
 pub fn estimate_homography_ransac(
     matches: &[FeatureMatch],
     reproj_threshold: f32,
+) -> (Vec<FeatureMatch>, Option<Homography2D>) {
+    estimate_homography_ransac_with_seeds(
+        matches,
+        reproj_threshold,
+        DEFAULT_SIMILARITY_RANSAC_SEED,
+        DEFAULT_HOMOGRAPHY_RANSAC_SEED,
+    )
+}
+
+/// Estimates a 3x3 planar homography (`Homography2D`) from raw correspondences using LO-RANSAC
+/// with adaptive termination, ratio-weighted sampling across all matches, collinearity/area
+/// degeneracy filtering, `f64` Jacobi null-space Normalized DLT, and a caller-supplied `seed`.
+pub fn estimate_homography_ransac_with_seed(
+    matches: &[FeatureMatch],
+    reproj_threshold: f32,
+    seed: u64,
+) -> (Vec<FeatureMatch>, Option<Homography2D>) {
+    estimate_homography_ransac_with_seeds(
+        matches,
+        reproj_threshold,
+        seed,
+        seed ^ 0x9E37_79B9_7F4A_7C15,
+    )
+}
+
+fn estimate_homography_ransac_with_seeds(
+    matches: &[FeatureMatch],
+    reproj_threshold: f32,
+    similarity_seed: u64,
+    homography_seed: u64,
 ) -> (Vec<FeatureMatch>, Option<Homography2D>) {
     if matches.is_empty() {
         return (Vec::new(), None);
@@ -2526,7 +2592,8 @@ pub fn estimate_homography_ransac(
     let thresh_sq = thresh * thresh;
 
     // Seed initial candidate with the 2D similarity RANSAC model promoted to 3x3 homography
-    let (sim_inliers, sim_opt) = filter_matches_ransac(matches, reproj_threshold);
+    let (sim_inliers, sim_opt) =
+        filter_matches_ransac_with_seed(matches, reproj_threshold, similarity_seed);
     let mut best_h: Option<[[f64; 3]; 3]> = sim_opt.map(|s| {
         [
             [s.a as f64, -(s.b as f64), s.tx as f64],
@@ -2545,7 +2612,7 @@ pub fn estimate_homography_ransac(
     }
 
     let cdf = build_ratio_weighted_cdf(matches);
-    let mut rng_state = 0x517C_C1B7_2722_0A95u64;
+    let mut rng_state = homography_seed;
     let hard_cap = 2000usize;
     let min_iters = 64usize;
     let mut max_iters =
