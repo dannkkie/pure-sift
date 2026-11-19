@@ -96,6 +96,9 @@ cargo build --release
 # Warp & feather-blend query onto target via Homography
 ./target/release/pure-sift align query.jpg target.jpg -o aligned.png
 
+# Multi-image panorama stitching with exposure compensation & multi-band blending
+./target/release/pure-sift panorama img1.jpg img2.jpg img3.jpg -o panorama.png
+
 # Build and query a 128-bit Hamming + RANSAC visual catalog
 ./target/release/pure-sift catalog-build ./photos -o catalog.json
 ./target/release/pure-sift catalog-search catalog.json probe.jpg --pretty
