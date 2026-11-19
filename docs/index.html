@@ -260,6 +260,50 @@
       background: rgba(52, 211, 153, 0.08);
       color: var(--ok);
     }
+    .stage-timings {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--muted);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 12px;
+      margin-bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+    .stage-timings span strong { color: var(--text); }
+    .webcam-stage {
+      position: relative;
+      width: 100%;
+      max-width: 720px;
+      margin: 0 auto;
+      background: #070a12;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .webcam-stage canvas {
+      width: 100%;
+      display: block;
+    }
+    .webcam-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .select-input {
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+    }
     .hidden { display: none !important; }
     footer {
       margin-top: 32px;
@@ -281,6 +325,7 @@
         <h1>
           <span>pure-sift</span>
           <span class="badge ok">WASM · Client-Side</span>
+          <span id="wasm-simd-badge" class="badge">Probing WASM...</span>
         </h1>
         <p class="subtitle">
           100% pure-Rust SIFT feature extraction, RANSAC homography &amp; image stitcher running directly in your browser.
@@ -297,6 +342,7 @@
       <div class="tabs">
         <button class="btn active" id="tab-match" type="button">Match &amp; Stitch (2 Images)</button>
         <button class="btn" id="tab-extract" type="button">Keypoint Inspector (1 Image)</button>
+        <button class="btn" id="tab-webcam" type="button">Live Webcam Tracking</button>
       </div>
       <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
         <button class="btn" id="btn-load-sample" type="button">Load Aerial Drone Sample</button>
@@ -365,6 +411,7 @@
           <div class="metric"><div class="label">RANSAC Inliers</div><div class="value ok" id="m-inliers">-</div></div>
           <div class="metric"><div class="label">WASM Time</div><div class="value" id="m-time">-</div></div>
         </div>
+        <div id="m-timings" class="stage-timings hidden"></div>
 
         <div class="card" style="margin-bottom: 16px;">
           <h2>
@@ -410,6 +457,37 @@
             <a id="dl-extract" class="btn" download="pure_sift_keypoints.png">Download PNG</a>
           </h2>
           <img id="img-extract" class="output-img" alt="SIFT keypoints overlay" />
+        </div>
+      </div>
+    </section>
+
+    <!-- LIVE WEBCAM TRACKING PANEL -->
+    <section id="panel-webcam" class="hidden">
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="webcam-controls">
+          <button class="btn primary" id="btn-cam-toggle" type="button">Start Webcam</button>
+          <button class="btn" id="btn-cam-capture" type="button" disabled>Capture Reference Frame</button>
+          <label style="font-size: 0.84rem; color: var(--muted);">
+            Track Width:
+            <select id="cam-width" class="select-input">
+              <option value="240">240 px (fastest)</option>
+              <option value="320" selected>320 px (balanced)</option>
+              <option value="480">480 px (detailed)</option>
+            </select>
+          </label>
+          <span id="cam-ref-badge" class="badge">No reference</span>
+        </div>
+        <div class="metrics">
+          <div class="metric"><div class="label">Tracker FPS</div><div class="value" id="w-fps">-</div></div>
+          <div class="metric"><div class="label">Frame Features</div><div class="value" id="w-kpts">-</div></div>
+          <div class="metric"><div class="label">Inliers</div><div class="value ok" id="w-inliers">-</div></div>
+          <div class="metric"><div class="label">Extract ms</div><div class="value" id="w-ext-ms">-</div></div>
+          <div class="metric"><div class="label">Match ms</div><div class="value" id="w-mat-ms">-</div></div>
+          <div class="metric"><div class="label">RANSAC ms</div><div class="value" id="w-ran-ms">-</div></div>
+        </div>
+        <div class="webcam-stage">
+          <video id="webcam-video" autoplay playsinline muted class="hidden"></video>
+          <canvas id="webcam-canvas" width="640" height="480"></canvas>
         </div>
       </div>
     </section>
@@ -532,23 +610,37 @@
     setupDropzone("drop-b", "file-b", "meta-b", (b) => { bytesB = b; });
     setupDropzone("drop-single", "file-single", "meta-single", (b) => { bytesSingle = b; });
 
-    document.getElementById("tab-match").addEventListener("click", () => {
-      mode = "match";
-      document.getElementById("tab-match").classList.add("active");
-      document.getElementById("tab-extract").classList.remove("active");
-      document.getElementById("panel-match").classList.remove("hidden");
-      document.getElementById("panel-extract").classList.add("hidden");
+    function switchTab(nextMode) {
+      mode = nextMode;
+      const tabs = ["match", "extract", "webcam"];
+      for (const t of tabs) {
+        document.getElementById(`tab-${t}`).classList.toggle("active", t === nextMode);
+        document.getElementById(`panel-${t}`).classList.toggle("hidden", t !== nextMode);
+      }
+      const isFileMode = nextMode !== "webcam";
+      document.getElementById("btn-load-sample").classList.toggle("hidden", !isFileMode);
+      document.getElementById("btn-run").classList.toggle("hidden", !isFileMode);
       clearStatus();
-    });
+    }
 
-    document.getElementById("tab-extract").addEventListener("click", () => {
-      mode = "extract";
-      document.getElementById("tab-extract").classList.add("active");
-      document.getElementById("tab-match").classList.remove("active");
-      document.getElementById("panel-extract").classList.remove("hidden");
-      document.getElementById("panel-match").classList.add("hidden");
-      clearStatus();
-    });
+    document.getElementById("tab-match").addEventListener("click", () => switchTab("match"));
+    document.getElementById("tab-extract").addEventListener("click", () => switchTab("extract"));
+    document.getElementById("tab-webcam").addEventListener("click", () => switchTab("webcam"));
+
+    (async () => {
+      try {
+        const info = await callWorker("info", {});
+        const badge = document.getElementById("wasm-simd-badge");
+        if (info.simdEnabled) {
+          badge.textContent = "WASM SIMD128";
+          badge.classList.add("ok");
+        } else {
+          badge.textContent = "WASM Scalar";
+        }
+      } catch {
+        // Worker info probe best-effort
+      }
+    })();
 
     async function runPipeline() {
       const btnRun = document.getElementById("btn-run");
@@ -579,6 +671,18 @@
           document.getElementById("m-raw").textContent = res.rawMatches.toLocaleString();
           document.getElementById("m-inliers").textContent = `${res.inliers.toLocaleString()} (H:${res.homInliers} / S:${res.simInliers})`;
           document.getElementById("m-time").textContent = `${res.elapsedMs} ms`;
+          if (res.timings) {
+            const t = res.timings;
+            const timingEl = document.getElementById("m-timings");
+            timingEl.innerHTML =
+              `<span>Decode: <strong>${t.decodeMs} ms</strong></span>` +
+              `<span>Extract: <strong>${t.extractMs} ms</strong></span>` +
+              `<span>Match: <strong>${t.matchMs} ms</strong></span>` +
+              `<span>RANSAC: <strong>${t.ransacMs} ms</strong></span>` +
+              `<span>Render: <strong>${t.renderMs} ms</strong></span>` +
+              `<span>Stitch: <strong>${t.stitchMs} ms</strong></span>`;
+            timingEl.classList.remove("hidden");
+          }
 
           const matchesUrl = makeBlobUrl(res.matchesPngBuffer);
           document.getElementById("img-matches").src = matchesUrl;
@@ -655,6 +759,120 @@
       } catch (err) {
         setStatus(`Sample load failed: ${err.message}`, "err");
       }
+    });
+
+    // Live Webcam Tracking mode
+    let camStream = null;
+    let camRunning = false;
+    let camHasRef = false;
+    let captureRequested = false;
+    const offscreen = document.createElement("canvas");
+    const offCtx = offscreen.getContext("2d", { willReadFrequently: true });
+    const camVideo = document.getElementById("webcam-video");
+    const camCanvas = document.getElementById("webcam-canvas");
+    const camCtx = camCanvas.getContext("2d");
+
+    async function trackLoop() {
+      while (camRunning) {
+        if (camVideo.readyState >= 2 && camVideo.videoWidth > 0) {
+          const targetW = parseInt(document.getElementById("cam-width").value, 10);
+          const scale = targetW / camVideo.videoWidth;
+          const targetH = Math.max(16, Math.round(camVideo.videoHeight * scale));
+
+          offscreen.width = targetW;
+          offscreen.height = targetH;
+          offCtx.drawImage(camVideo, 0, 0, targetW, targetH);
+
+          if (camCanvas.width !== camVideo.videoWidth || camCanvas.height !== camVideo.videoHeight) {
+            camCanvas.width = camVideo.videoWidth;
+            camCanvas.height = camVideo.videoHeight;
+          }
+          camCtx.drawImage(camVideo, 0, 0);
+
+          const imgData = offCtx.getImageData(0, 0, targetW, targetH);
+          const rgbaBuf = imgData.data.buffer;
+
+          const octaves = parseInt(document.getElementById("param-octaves").value, 10);
+          const scales = parseInt(document.getElementById("param-scales").value, 10);
+          const threshold = parseFloat(document.getElementById("param-contrast").value);
+          const ratio = parseFloat(document.getElementById("param-ratio").value);
+          const ransacThreshold = parseFloat(document.getElementById("param-ransac").value);
+
+          if (captureRequested) {
+            captureRequested = false;
+            const res = await callWorker(
+              "webcam_set_ref",
+              { rgbaBuffer: rgbaBuf, width: targetW, height: targetH, octaves, scales, threshold, ratio, ransacThreshold },
+              [rgbaBuf]
+            );
+            camHasRef = true;
+            document.getElementById("cam-ref-badge").textContent = `Ref: ${res.refFeatures} kpts (${targetW}x${targetH})`;
+            document.getElementById("cam-ref-badge").classList.add("ok");
+            setStatus(`Captured reference frame (${res.refFeatures} features) in ${res.elapsedMs} ms.`, "ok");
+          } else if (camHasRef) {
+            const res = await callWorker(
+              "webcam_track",
+              { rgbaBuffer: rgbaBuf, width: targetW, height: targetH },
+              [rgbaBuf]
+            );
+            const fps = res.totalMs > 0 ? Math.round((1000 / res.totalMs) * 10) / 10 : 0;
+            document.getElementById("w-fps").textContent = `${fps}`;
+            document.getElementById("w-kpts").textContent = res.frameFeatures.toLocaleString();
+            document.getElementById("w-inliers").textContent = res.inliers.toLocaleString();
+            document.getElementById("w-ext-ms").textContent = `${res.extractMs}`;
+            document.getElementById("w-mat-ms").textContent = `${res.matchMs}`;
+            document.getElementById("w-ran-ms").textContent = `${res.ransacMs}`;
+
+            if (res.hasHomography && res.corners && res.corners.length === 8) {
+              const sx = camCanvas.width / targetW;
+              const sy = camCanvas.height / targetH;
+              const c = res.corners;
+              camCtx.save();
+              camCtx.strokeStyle = "#34d399";
+              camCtx.lineWidth = 4;
+              camCtx.beginPath();
+              camCtx.moveTo(c[0] * sx, c[1] * sy);
+              camCtx.lineTo(c[2] * sx, c[3] * sy);
+              camCtx.lineTo(c[4] * sx, c[5] * sy);
+              camCtx.lineTo(c[6] * sx, c[7] * sy);
+              camCtx.closePath();
+              camCtx.stroke();
+              camCtx.restore();
+            }
+          }
+        }
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+    }
+
+    document.getElementById("btn-cam-toggle").addEventListener("click", async () => {
+      const btn = document.getElementById("btn-cam-toggle");
+      const capBtn = document.getElementById("btn-cam-capture");
+      if (!camRunning) {
+        try {
+          camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          camVideo.srcObject = camStream;
+          await camVideo.play();
+          camRunning = true;
+          btn.textContent = "Stop Webcam";
+          capBtn.disabled = false;
+          trackLoop();
+        } catch (err) {
+          setStatus(`Webcam error: ${err.message}`, "err");
+        }
+      } else {
+        camRunning = false;
+        if (camStream) {
+          for (const track of camStream.getTracks()) track.stop();
+          camStream = null;
+        }
+        btn.textContent = "Start Webcam";
+        capBtn.disabled = true;
+      }
+    });
+
+    document.getElementById("btn-cam-capture").addEventListener("click", () => {
+      captureRequested = true;
     });
   </script>
 </body>
