@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Versioned binary catalog format (`.bin`) with atomic writes, JSON fallback, `16x8`-bit Multi-Index Hashing (MIH) search, `O(1)` ID index, and `DELETE /api/v1/catalog/{id}`.
 - MSRV (`1.88`), `cargo-deny` CI checks, CI-built GitHub Pages WASM demo, and tag-driven release workflow.
 
+### Changed (Breaking)
+- Made `server` a non-default Cargo feature (`default = ["rayon"]`), so `cargo add pure-sift` no longer pulls `axum`/`tokio`.
+- Scoped `src/lib.rs` exports to algorithm modules (`catalog`, `error`, `geometry`, `pipeline`, `stitch`, `visualize`), removing CLI parsers/handlers from the crate root (`#[doc(hidden)] pub mod cli`).
+- Replaced string-only `VisionError` variants with `thiserror` preserving structured `#[source]` causes (`ImageDecode`, `Io`, `Json`).
+- Enforced `#![warn(missing_docs)]` across the public library API and updated the web UI title/banner to `pure-sift`.
+
 ### Fixed
 - Lowe (2004) scale-space pyramid generation (`scales + 3` Gaussians per octave) and octave-coordinate descriptor/orientation sampling.
 - HTTP server hardening: loopback default bind (`127.0.0.1`), optional `API_TOKEN` bearer auth, concurrency limits, and `tracing` instrumentation.

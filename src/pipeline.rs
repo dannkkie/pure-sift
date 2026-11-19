@@ -21,10 +21,15 @@ pub const DEFAULT_CONTRAST_THRESHOLD: f32 = 0.015;
 /// Validated builder configuration for the [`Sift`] feature extractor.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SiftConfig {
+    /// Number of scale-space octaves (`1..=8`).
     pub octaves: usize,
+    /// Searchable Difference-of-Gaussians levels per octave (`>= 3`).
     pub scales: usize,
+    /// Minimum DoG extrema response contrast threshold (`(0.0, 1.0]`).
     pub contrast_threshold: f32,
+    /// Whether to 2x-bilinearly upsample the first octave per Lowe (2004).
     pub upsample_first_octave: bool,
+    /// Descriptor normalization variant (`Sift` or `RootSift`).
     pub descriptor_kind: DescriptorKind,
 }
 
@@ -482,15 +487,20 @@ pub fn upsample_2x_bilinear(img: &Array2<f32>) -> Array2<f32> {
 /// first octave is 2x upsampled, `1.0` at native resolution, `2.0` at octave+1, etc.).
 #[derive(Debug, Clone)]
 pub struct Octave {
+    /// Gaussian-blurred planes in this octave (`scales + 3` images).
     pub gaussians: Vec<Array2<f32>>,
+    /// Difference-of-Gaussians planes in this octave (`scales + 2` slices).
     pub dogs: Vec<Array2<f32>>,
+    /// Coordinate/sigma multiplier relative to the base input image.
     pub scale_factor: f32,
 }
 
 /// Explicit octave-indexed Gaussian and Difference-of-Gaussians (DoG) scale-space pyramid.
 #[derive(Debug, Clone)]
 pub struct Pyramid {
+    /// Ordered scale-space octaves from finest (`0`) to coarsest.
     pub octaves: Vec<Octave>,
+    /// Number of searchable DoG levels per octave.
     pub scales: usize,
 }
 
@@ -1047,9 +1057,13 @@ pub const MAX_FEATURES_PER_IMAGE: usize = 4096;
 /// and 128-dimensional rotation- and illumination-invariant descriptor (US6711293B1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SiftFeature {
+    /// Horizontal keypoint coordinate in base image pixels.
     pub x: f32,
+    /// Vertical keypoint coordinate in base image pixels.
     pub y: f32,
+    /// Effective Gaussian scale (`sigma`).
     pub scale: f32,
+    /// DoG extremum response value.
     pub response: f32,
     /// Dominant local gradient orientation in radians `[0.0, 2 * pi)`.
     pub orientation: f32,
@@ -1060,9 +1074,13 @@ pub struct SiftFeature {
 /// Matched feature correspondence between a query image and a target image.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FeatureMatch {
+    /// Index of the matched feature in the query slice.
     pub query_index: usize,
+    /// Index of the matched feature in the target slice.
     pub target_index: usize,
+    /// Keypoint `(x, y)` coordinates in the query image.
     pub query_point: (f32, f32),
+    /// Keypoint `(x, y)` coordinates in the target image.
     pub target_point: (f32, f32),
     /// Euclidean (L2) distance between the two 128-D descriptors.
     pub distance: f32,
@@ -1076,11 +1094,17 @@ pub struct FeatureMatch {
 /// where `a = scale * cos(theta)` and `b = scale * sin(theta)`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SimilarityTransform2D {
+    /// Cosine-scaled diagonal component `s * cos(theta)`.
     pub a: f32,
+    /// Sine-scaled skew component `s * sin(theta)`.
     pub b: f32,
+    /// Horizontal translation in pixels.
     pub tx: f32,
+    /// Vertical translation in pixels.
     pub ty: f32,
+    /// Estimated isotropic scale factor `s`.
     pub scale: f32,
+    /// Estimated in-plane rotation in degrees.
     pub rotation_deg: f32,
 }
 
@@ -1088,6 +1112,7 @@ pub struct SimilarityTransform2D {
 /// `(x', y', w')^T = H * (x, y, 1)^T` under 3D perspective tilt.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Homography2D {
+    /// Row-major 3x3 projective transformation matrix.
     pub matrix: [[f32; 3]; 3],
 }
 
@@ -1110,12 +1135,19 @@ impl Homography2D {
 /// Aggregated kinematic / alignment estimate across matched SIFT features after RANSAC inlier filtering.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TrackingSummary {
+    /// Number of raw Lowe-ratio matches before RANSAC filtering.
     pub raw_match_count: usize,
+    /// Number of geometric inlier matches retained after RANSAC.
     pub match_count: usize,
+    /// Fraction of raw matches surviving RANSAC (`match_count / raw_match_count`).
     pub inlier_ratio: f32,
+    /// Mean `(dx, dy)` displacement over inlier matches.
     pub mean_displacement: (f32, f32),
+    /// Component-wise median `(dx, dy)` displacement over inlier matches.
     pub median_displacement: (f32, f32),
+    /// Geometric scale ratio between matched target and query keypoints.
     pub mean_scale_ratio: f32,
+    /// Circular mean orientation delta in degrees.
     pub mean_rotation_deg: f32,
 }
 

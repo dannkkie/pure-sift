@@ -33,11 +33,11 @@ Zero C/C++ FFI, zero OpenCV/CMake/LLVM build dependencies — compiles cleanly t
 
 ### Use as a Rust Library
 
-Add `pure-sift` to your `Cargo.toml` (use `default-features = false` for WASM, mobile, or library-only builds without `axum`/`tokio`):
+Add `pure-sift` to your `Cargo.toml`. Default features enable only `rayon` (zero `axum`/`tokio` HTTP dependencies); pass `default-features = false` for single-threaded WASM or mobile builds:
 
 ```toml
 [dependencies]
-pure-sift = { version = "0.1", default-features = false }
+pure-sift = "0.1"
 image = "0.25"
 ```
 
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Run the Embedded Web UI & HTTP Microservice
 ```bash
-cargo run --release -- serve --bind 127.0.0.1:3000
+cargo run --release --features server -- serve --bind 127.0.0.1:3000
 # Open http://127.0.0.1:3000/ in your browser
 ```
 

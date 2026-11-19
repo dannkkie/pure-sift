@@ -22,7 +22,10 @@ pub enum ProjectionMode {
     /// Planar pinhole projection directly via homographies.
     Planar,
     /// Cylindrical projection with focal length in pixels (`focal_px`).
-    Cylindrical { focal_px: f32 },
+    Cylindrical {
+        /// Camera focal length in pixels used as cylinder radius.
+        focal_px: f32,
+    },
 }
 
 /// Composite blending mode for panorama stitching.
@@ -31,22 +34,36 @@ pub enum BlendMode {
     /// Feather weighting proportional to distance from valid image borders (tiled memory-bounded pass).
     Feather,
     /// Burt & Adelson multi-band Laplacian pyramid blending over Voronoi seam masks.
-    MultiBand { levels: usize },
+    MultiBand {
+        /// Number of Laplacian pyramid levels (`1..=6`).
+        levels: usize,
+    },
 }
 
 /// Configuration for multi-image panorama stitching (`stitch_panorama`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanoramaOptions {
+    /// Number of scale-space octaves (`1..=8`).
     pub octaves: usize,
+    /// Searchable DoG scales per octave (`3..=10`).
     pub scales: usize,
+    /// DoG contrast threshold in `(0.0, 1.0]`.
     pub threshold: f32,
+    /// Lowe's descriptor ratio threshold in `(0.0, 1.0]`.
     pub ratio: f32,
+    /// RANSAC reprojection error threshold in pixels.
     pub ransac_threshold: f32,
+    /// Surface projection mode (`Planar` or `Cylindrical`).
     pub projection: ProjectionMode,
+    /// Blending mode (`Feather` or `MultiBand`).
     pub blend: BlendMode,
+    /// Enable Brown & Lowe regularized exposure gain compensation.
     pub exposure_compensation: bool,
+    /// Maximum allowed output canvas width/height in pixels.
     pub max_canvas_dim: usize,
+    /// Maximum allowed total output canvas area in pixels.
     pub max_canvas_pixels: usize,
+    /// Tile size in pixels for memory-bounded feather rendering.
     pub tile_size: usize,
 }
 
@@ -72,10 +89,15 @@ impl Default for PanoramaOptions {
 /// solved per-image exposure gains, and global image-to-reference homographies.
 #[derive(Debug, Clone)]
 pub struct PanoramaResult {
+    /// Composite stitched RGBA panorama image.
     pub image: RgbaImage,
+    /// Index of the chosen reference anchor image in the input slice.
     pub reference_index: usize,
+    /// Indices of input images successfully registered into the panorama.
     pub registered_indices: Vec<usize>,
+    /// Solved multiplicative exposure gain per input image (`1.0` at reference).
     pub gains: Vec<f32>,
+    /// Global homography mapping each input image into reference coordinates (`None` if unregistered).
     pub homographies: Vec<Option<Homography2D>>,
 }
 
