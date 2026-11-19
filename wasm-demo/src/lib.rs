@@ -1,10 +1,12 @@
 use ndarray::Array2;
+use pure_sift::cli::{
+    decode_validated_dynamic_image, map_image_prefix, run_visualize_features_rgba,
+    validate_match_params, validate_pipeline_params,
+};
 use pure_sift::{
-    SiftFeature, decode_validated_dynamic_image, draw_matches_side_by_side, encode_rgba_png,
-    estimate_homography_ransac, extract_sift_features, filter_matches_ransac,
-    is_sane_homography_for_dims, luma_to_array2, map_image_prefix, match_descriptors,
-    resolve_safe_alignment_homography, run_visualize_features_rgba, validate_match_params,
-    validate_pipeline_params, warp_and_stitch,
+    SiftFeature, draw_matches_side_by_side, encode_rgba_png, estimate_homography_ransac,
+    extract_sift_features, filter_matches_ransac, is_sane_homography_for_dims, luma_to_array2,
+    match_descriptors, resolve_safe_alignment_homography, warp_and_stitch,
 };
 use wasm_bindgen::prelude::*;
 

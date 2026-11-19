@@ -165,9 +165,13 @@ mod server {
     fn map_vision_error(err: VisionError) -> Response {
         let status = match &err {
             VisionError::InvalidInput(_) => StatusCode::BAD_REQUEST,
-            VisionError::UnprocessableImage(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            VisionError::UnprocessableImage(_) | VisionError::ImageDecode { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             VisionError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            VisionError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            VisionError::Io { .. } | VisionError::Json { .. } | VisionError::Runtime(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
         json_error_response(status, err.to_string())
     }
@@ -628,7 +632,7 @@ mod server {
         match run_blocking_with_timeout(&state, "Feature visualization timed out", move |_cancel| {
             let (rendered, _) =
                 run_visualize_features_rgba(&raw_bytes, octaves, scales, threshold, true)?;
-            encode_rgba_png(&rendered).map_err(VisionError::Io)
+            encode_rgba_png(&rendered).map_err(VisionError::Runtime)
         })
         .await
         {
@@ -696,7 +700,7 @@ mod server {
                 let (stitched, _) = run_align_images_rgba(&query_bytes, &target_bytes, pair_opts)?;
                 stitched
             };
-            encode_rgba_png(&rgba).map_err(VisionError::Io)
+            encode_rgba_png(&rgba).map_err(VisionError::Runtime)
         })
         .await
         {
@@ -712,7 +716,7 @@ mod server {
             let guard = state_clone
                 .catalog
                 .read()
-                .map_err(|_| VisionError::Io("Catalog lock poisoned".to_string()))?;
+                .map_err(|_| VisionError::Runtime("Catalog lock poisoned".to_string()))?;
             Ok(CatalogListResponse {
                 catalog_size: guard.entries.len(),
                 octaves: guard.octaves,
@@ -754,7 +758,7 @@ mod server {
                 let guard = state_clone
                     .catalog
                     .read()
-                    .map_err(|_| VisionError::Io("Catalog lock poisoned".to_string()))?;
+                    .map_err(|_| VisionError::Runtime("Catalog lock poisoned".to_string()))?;
                 (guard.octaves, guard.scales, guard.threshold)
             };
 
@@ -770,7 +774,7 @@ mod server {
                 let mut guard = state_clone
                     .catalog
                     .write()
-                    .map_err(|_| VisionError::Io("Catalog lock poisoned".to_string()))?;
+                    .map_err(|_| VisionError::Runtime("Catalog lock poisoned".to_string()))?;
                 guard.upsert_entry(id.clone(), extracted.width, extracted.height, features);
                 guard.entries.len()
             };
@@ -828,7 +832,7 @@ mod server {
             let guard = state_clone
                 .catalog
                 .read()
-                .map_err(|_| VisionError::Io("Catalog lock poisoned".to_string()))?;
+                .map_err(|_| VisionError::Runtime("Catalog lock poisoned".to_string()))?;
             run_catalog_search_from_bytes(
                 &guard,
                 &query_bytes,
@@ -966,7 +970,7 @@ fn main() -> ExitCode {
             {
                 let _ = bind_addr;
                 eprintln!(
-                    "Error: `serve` requires the `server` Cargo feature (enabled by default)."
+                    "Error: `serve` requires the `server` Cargo feature. Rebuild with: `cargo run --release --features server -- serve`"
                 );
                 ExitCode::from(2)
             }
@@ -1041,7 +1045,7 @@ mod tests {
                 .contains("x-request-id: req-"),
             "Expected x-request-id header"
         );
-        assert!(root_resp.contains("Native Vision Engine"));
+        assert!(root_resp.contains("pure-sift"));
         assert!(root_resp.contains("data-preset=\"medical\""));
         assert!(root_resp.contains("data-preset=\"tracking\""));
         assert!(root_resp.contains("data-preset=\"stitch\""));

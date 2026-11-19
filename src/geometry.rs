@@ -10,21 +10,27 @@ use serde::{Deserialize, Serialize};
 /// `(x2, y2, 1)` via the epipolar constraint `x2^T F x1 = 0`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FundamentalMatrix {
+    /// Row-major 3x3 Fundamental matrix `F` normalized to unit Frobenius norm.
     pub matrix: [[f64; 3]; 3],
 }
 
 /// 3x3 Essential matrix `E` in normalized camera coordinates satisfying `x2_n^T E x1_n = 0`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EssentialMatrix {
+    /// Row-major 3x3 Essential matrix `E` normalized to unit Frobenius norm.
     pub matrix: [[f64; 3]; 3],
 }
 
 /// Pinhole camera intrinsics matrix `K = [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CameraIntrinsics {
+    /// Horizontal focal length in pixels.
     pub fx: f64,
+    /// Vertical focal length in pixels.
     pub fy: f64,
+    /// Principal point horizontal coordinate in pixels.
     pub cx: f64,
+    /// Principal point vertical coordinate in pixels.
     pub cy: f64,
 }
 
@@ -67,8 +73,11 @@ impl CameraIntrinsics {
 /// up to positive translation scale (`||t|| = 1`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RelativePose {
+    /// 3x3 orthonormal rotation matrix `R` from camera 1 to camera 2.
     pub rotation: [[f64; 3]; 3],
+    /// Unit-norm 3D translation vector `t` from camera 1 to camera 2.
     pub translation: [f64; 3],
+    /// Number of correspondences triangulating with positive depth in both views.
     pub cheirality_inliers: usize,
 }
 
@@ -76,7 +85,9 @@ pub struct RelativePose {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelSelection {
+    /// Planar / degenerate pure-rotation scene described by a 2D homography.
     Homography,
+    /// General 3D scene with parallax described by a Fundamental matrix.
     Fundamental,
 }
 
@@ -84,8 +95,11 @@ pub enum ModelSelection {
 /// general epipolar Fundamental matrix models.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GricComparison {
+    /// Selected two-view model (`Homography` or `Fundamental`).
     pub selected: ModelSelection,
+    /// Computed GRIC score for the planar Homography model.
     pub homography_gric: f64,
+    /// Computed GRIC score for the Fundamental matrix model.
     pub fundamental_gric: f64,
 }
 
