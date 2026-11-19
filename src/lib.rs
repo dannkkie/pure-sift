@@ -2,6 +2,7 @@
 
 pub mod catalog;
 pub mod cli;
+pub mod geometry;
 pub mod pipeline;
 pub mod visualize;
 
@@ -20,6 +21,13 @@ pub use cli::{
     run_match_from_bytes, run_visualize_features_rgba, run_visualize_matches_rgba,
     save_rgba_output, serialize_extract_csv, serialize_json, serialize_match_csv,
     validate_match_params, validate_pipeline_params, write_json_output,
+};
+pub use geometry::{
+    CameraIntrinsics, EssentialMatrix, FundamentalMatrix, FundamentalRansacOptions, GricComparison,
+    ModelSelection, RelativePose, essential_from_fundamental, estimate_essential_ransac,
+    estimate_fundamental_ransac, estimate_fundamental_ransac_with_options, fit_fundamental_7point,
+    fit_fundamental_8point, recover_pose, rotation_error_deg, sampson_distance_sq,
+    select_model_gric, triangulate_point_linear,
 };
 pub use pipeline::{
     ASSUMED_INPUT_SIGMA, BASE_SIGMA, DEFAULT_CONTRAST_THRESHOLD, DEFAULT_HOMOGRAPHY_RANSAC_SEED,
