@@ -125,10 +125,21 @@ cargo build --release
 ## Benchmarks & Specification
 
 * Mathematical formulation & implementation reference: [`patent_analysis.md`](patent_analysis.md)
-* Real-camera validation benchmarks tested with `pure-sift`:
-  * **Object in Clutter (`box.png` vs. `box_in_scene.png`):** `17/22` Similarity inliers, `18/22` Homography inliers
-  * **Oxford VGG 3D Viewpoint Tilt (`graf1.png` vs. `graf3.png`):** `52/103` (`50.5%`) Homography inliers vs. `11/103` rigid-only Similarity
-  * **10-MP DSLR Panorama (`boat1.jpg` vs. `boat2.jpg`, `3888x2592`):** `470/617` (`76.2%`) Homography inliers stitched to `5411x2998`
+* Reproducible HPatches vs. OpenCV SIFT benchmark harness: [`tools/hpatches/README.md`](tools/hpatches/README.md)
+
+```bash
+cargo build --release
+pip install -r tools/hpatches/requirements.txt
+python tools/hpatches/run_hpatches.py --download --output docs/benchmarks/hpatches_results.json
+```
+
+**Synthetic Self-Test Harness Output** ([`docs/benchmarks/synthetic_self_test.json`](docs/benchmarks/synthetic_self_test.json), generated via `--self-test` on viewpoint + illumination warps of `docs/samples/aerial_west.jpg`; install `opencv-python-headless` and pass `--download` for full HPatches vs. OpenCV numbers):
+
+| Engine | Split | Pairs | Repeat@3px | MatchScore@3px | MMA@1px | MMA@3px | MMA@5px | HomAUC@3/5/10px | Mean ms |
+|---|---|---|---|---|---|---|---|---|---|
+| `pure-sift` | viewpoint | 3 | 84.9% | 40.5% | 97.9% | 99.1% | 99.2% | 60.0% / 76.0% / 88.0% | 198.3 ms |
+| `pure-sift` | illumination | 3 | 93.4% | 54.7% | 99.2% | 99.8% | 99.8% | 99.7% / 99.8% / 99.9% | 221.7 ms |
+| `pure-sift` | overall | 6 | 89.2% | 47.6% | 98.6% | 99.4% | 99.5% | 79.9% / 87.9% / 94.0% | 210.0 ms |
 
 ---
 

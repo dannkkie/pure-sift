@@ -5,3 +5,4 @@ target/
 /*.jpg
 /docs/pkg/
 /docs/pkg-simd/
+/.cache/
