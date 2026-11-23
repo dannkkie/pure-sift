@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "pure-sift"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "ndarray",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "pure-sift-wasm-demo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "js-sys",
  "ndarray",
