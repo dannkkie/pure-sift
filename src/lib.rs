@@ -1,28 +1,33 @@
-#![forbid(unsafe_code)]
+//! Pure-Rust SIFT feature extraction (Lowe 2004, expired patent `US6711293B1`),
+//! multi-view geometry estimation, RANSAC homography alignment, multi-image
+//! panorama stitching, and compact Hamming/MIH visual catalog search with zero
+//! `unsafe` code (`#![forbid(unsafe_code)]`).
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+/// Binary & JSON visual feature catalog with 16x8-bit Multi-Index Hashing search.
 pub mod catalog;
+/// Internal CLI runner & payload validation helpers (used by the binary, WASM demo, and fuzz targets).
+#[doc(hidden)]
+#[allow(missing_docs)]
 pub mod cli;
+/// Structured error types powered by `thiserror`.
+pub mod error;
+/// Fundamental/Essential matrix RANSAC solvers, linear triangulation, pose recovery, and GRIC selection.
 pub mod geometry;
+/// Core DoG scale-space SIFT feature extraction, descriptor matching, and 2D Similarity/Homography RANSAC.
 pub mod pipeline;
+/// Multi-image panorama stitching, cylindrical warp, exposure compensation, and multi-band blending.
 pub mod stitch;
+/// Image alignment warping, feather blending, and keypoint/match PNG overlays.
 pub mod visualize;
 
 pub use catalog::{
     CatalogEntry, CatalogEntrySummary, CatalogSearchHit, CompactSiftFeature,
     DEFAULT_CATALOG_SHORTLIST, DEFAULT_CATALOG_TOP_K, FeatureCatalog, quantize_descriptor_u128,
 };
-pub use cli::{
-    AlignArgs, CatalogBuildArgs, CatalogSearchArgs, CatalogSearchOptions, CatalogSearchResponse,
-    CliCommand, DEFAULT_OCTAVES, DEFAULT_SCALES, ExtractArgs, FeatureResponse, MAX_IMAGE_DIM,
-    MAX_IMAGE_PIXELS, MAX_OCTAVES, MAX_SCALES, MIN_IMAGE_DIM, MIN_OCTAVES, MIN_SCALES, MatchArgs,
-    MatchFeaturesResponse, OutputFormat, PairPipelineOptions, PanoramaArgs, VisionError,
-    VisualizeArgs, VisualizeMatchesArgs, decode_validated_dynamic_image, decode_validated_luma8,
-    execute_cli_command, execute_cli_to_stdout, map_image_prefix, parse_cli_args,
-    run_align_images_rgba, run_catalog_search_from_bytes, run_extract_from_bytes,
-    run_match_from_bytes, run_visualize_features_rgba, run_visualize_matches_rgba,
-    save_rgba_output, serialize_extract_csv, serialize_json, serialize_match_csv,
-    validate_match_params, validate_pipeline_params, write_json_output,
-};
+pub use error::VisionError;
 pub use geometry::{
     CameraIntrinsics, EssentialMatrix, FundamentalMatrix, FundamentalRansacOptions, GricComparison,
     ModelSelection, RelativePose, essential_from_fundamental, estimate_essential_ransac,

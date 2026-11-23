@@ -47,20 +47,30 @@ pub fn quantize_descriptor_u128(desc: &[f32]) -> u128 {
 /// Summary metadata for a single indexed image inside `FeatureCatalog`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntrySummary {
+    /// Entry identifier (typically the filename).
     pub id: String,
+    /// Source image width in pixels.
     pub width: usize,
+    /// Source image height in pixels.
     pub height: usize,
+    /// Number of indexed SIFT features in this entry.
     pub feature_count: usize,
 }
 
 /// Compact SIFT feature storing quantized `u8` descriptors (128 bytes instead of 512 bytes for `Vec<f32>`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactSiftFeature {
+    /// Horizontal coordinate in the source image.
     pub x: f32,
+    /// Vertical coordinate in the source image.
     pub y: f32,
+    /// Keypoint scale (`sigma`).
     pub scale: f32,
+    /// DoG extremum response value.
     pub response: f32,
+    /// Canonical gradient orientation in radians.
     pub orientation: f32,
+    /// 128-element `u8`-quantized descriptor vector.
     pub descriptor_u8: Vec<u8>,
 }
 
@@ -94,15 +104,21 @@ impl CompactSiftFeature {
 /// Stored catalog entry holding an image's extracted SIFT features and transient 128-bit signatures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogEntry {
+    /// Unique entry identifier.
     pub id: String,
+    /// Image width in pixels.
     pub width: usize,
+    /// Image height in pixels.
     pub height: usize,
+    /// Full SIFT features extracted from the image.
     pub features: Vec<SiftFeature>,
+    /// Transient 128-bit binary quantization signatures used for MIH shortlisting.
     #[serde(skip)]
     pub signatures: Vec<u128>,
 }
 
 impl CatalogEntry {
+    /// Creates a new `CatalogEntry` and precomputes its 128-bit binary signatures.
     pub fn new(
         id: impl Into<String>,
         width: usize,
@@ -122,6 +138,7 @@ impl CatalogEntry {
         }
     }
 
+    /// Recomputes 128-bit Hamming signatures from `self.features`.
     pub fn rebuild_signatures(&mut self) {
         self.signatures = self
             .features
@@ -139,14 +156,22 @@ impl CatalogEntry {
 /// Ranked visual-search hit produced by `FeatureCatalog::search_features`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogSearchHit {
+    /// Matched catalog entry identifier.
     pub id: String,
+    /// Indexed image width in pixels.
     pub width: usize,
+    /// Indexed image height in pixels.
     pub height: usize,
+    /// Total indexed features in this entry.
     pub feature_count: usize,
+    /// Coarse Hamming-distance shortlist votes.
     pub coarse_votes: usize,
+    /// Geometric RANSAC match & motion summary.
     pub tracking: TrackingSummary,
+    /// Best 2D similarity transform if estimated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transform: Option<SimilarityTransform2D>,
+    /// Best 3x3 planar homography if estimated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub homography: Option<Homography2D>,
 }
@@ -155,11 +180,16 @@ pub struct CatalogSearchHit {
 /// prefiltering, O(1) id lookup/deletion, and exact geometric RANSAC verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureCatalog {
+    /// Number of scale-space octaves configured for this catalog.
     pub octaves: usize,
+    /// Number of searchable DoG scales per octave.
     pub scales: usize,
+    /// Contrast threshold used during extraction.
     pub threshold: f32,
+    /// Descriptor normalization variant stored in this catalog.
     #[serde(default)]
     pub descriptor_kind: DescriptorKind,
+    /// Indexed image entries.
     pub entries: Vec<CatalogEntry>,
     #[serde(skip)]
     id_index: HashMap<String, usize>,

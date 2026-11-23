@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::{
-    fmt, fs,
+    fs,
     io::{self, Cursor, Write},
     path::PathBuf,
 };
@@ -85,27 +85,7 @@ pub struct MatchFeaturesResponse {
     pub matches: Vec<FeatureMatch>,
 }
 
-/// Application-level error shared between the HTTP API and CLI runner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VisionError {
-    InvalidInput(String),
-    UnprocessableImage(String),
-    PayloadTooLarge(String),
-    Io(String),
-}
-
-impl fmt::Display for VisionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            VisionError::InvalidInput(msg)
-            | VisionError::UnprocessableImage(msg)
-            | VisionError::PayloadTooLarge(msg)
-            | VisionError::Io(msg) => f.write_str(msg),
-        }
-    }
-}
-
-impl std::error::Error for VisionError {}
+pub use crate::error::VisionError;
 
 /// Validates common scale-space pipeline parameters (`octaves`, `scales`, `threshold`).
 pub fn validate_pipeline_params(
@@ -156,13 +136,11 @@ pub fn decode_validated_dynamic_image(
 ) -> Result<DynamicImage, VisionError> {
     let reader = ImageReader::new(Cursor::new(raw_bytes))
         .with_guessed_format()
-        .map_err(|e| {
-            VisionError::UnprocessableImage(format!("Failed to inspect image header: {e}"))
-        })?;
+        .map_err(|e| VisionError::io("Failed to inspect image header", e))?;
 
-    let (w, h) = reader.into_dimensions().map_err(|e| {
-        VisionError::UnprocessableImage(format!("Invalid or unsupported image header: {e}"))
-    })?;
+    let (w, h) = reader
+        .into_dimensions()
+        .map_err(|e| VisionError::image_decode("Invalid or unsupported image header", e))?;
 
     if w < MIN_IMAGE_DIM || h < MIN_IMAGE_DIM {
         return Err(VisionError::InvalidInput(format!(
@@ -179,9 +157,8 @@ pub fn decode_validated_dynamic_image(
         }
     }
 
-    image::load_from_memory(raw_bytes).map_err(|e| {
-        VisionError::UnprocessableImage(format!("Failed to decode PNG/JPEG image payload: {e}"))
-    })
+    image::load_from_memory(raw_bytes)
+        .map_err(|e| VisionError::image_decode("Failed to decode image payload", e))
 }
 
 /// Validates image header dimensions and decodes bytes into a grayscale `Luma8` buffer.
@@ -475,14 +452,7 @@ pub fn run_align_images_rgba(
 }
 
 pub fn map_image_prefix(prefix: &str, err: VisionError) -> VisionError {
-    match err {
-        VisionError::InvalidInput(m) => VisionError::InvalidInput(format!("{prefix}: {m}")),
-        VisionError::UnprocessableImage(m) => {
-            VisionError::UnprocessableImage(format!("{prefix}: {m}"))
-        }
-        VisionError::PayloadTooLarge(m) => VisionError::PayloadTooLarge(format!("{prefix}: {m}")),
-        VisionError::Io(m) => VisionError::Io(format!("{prefix}: {m}")),
-    }
+    err.with_prefix(prefix)
 }
 
 /// Output serialization format for CLI `extract` and `match` subcommands.
@@ -1332,7 +1302,7 @@ fn parse_pair_visual_args(
             let (flag, inline_val) = split_flag_value(arg);
             match flag {
                 "-h" | "--help" => {
-                    return Err(VisionError::Io(format!("__HELP__:{cmd_name}")));
+                    return Err(VisionError::Runtime(format!("__HELP__:{cmd_name}")));
                 }
                 "-o" | "--output" => {
                     output_path = PathBuf::from(take_value(flag, inline_val, args, &mut i)?);
@@ -1425,7 +1395,7 @@ fn parse_visualize_matches_args(args: &[String]) -> Result<CliCommand, VisionErr
             ransac_enabled: m.ransac_enabled,
             ransac_threshold: m.ransac_threshold,
         })),
-        Err(VisionError::Io(ref s)) if s == "__HELP__:visualize-matches" => {
+        Err(VisionError::Runtime(ref s)) if s == "__HELP__:visualize-matches" => {
             Ok(CliCommand::Help(Some("visualize-matches".to_string())))
         }
         Err(e) => Err(e),
@@ -1444,7 +1414,7 @@ fn parse_align_args(args: &[String]) -> Result<CliCommand, VisionError> {
             ratio: m.ratio,
             ransac_threshold: m.ransac_threshold,
         })),
-        Err(VisionError::Io(ref s)) if s == "__HELP__:align" => {
+        Err(VisionError::Runtime(ref s)) if s == "__HELP__:align" => {
             Ok(CliCommand::Help(Some("align".to_string())))
         }
         Err(e) => Err(e),
@@ -1775,17 +1745,14 @@ fn collect_image_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, VisionError> 
     for path in inputs {
         if path.is_dir() {
             let entries = fs::read_dir(path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read directory `{}`: {e}",
-                    path.display()
-                ))
+                VisionError::io(format!("Failed to read directory `{}`", path.display()), e)
             })?;
             for entry in entries {
                 let entry = entry.map_err(|e| {
-                    VisionError::Io(format!(
-                        "Directory traversal error in `{}`: {e}",
-                        path.display()
-                    ))
+                    VisionError::io(
+                        format!("Directory traversal error in `{}`", path.display()),
+                        e,
+                    )
                 })?;
                 let p = entry.path();
                 if p.is_file() && is_supported_image_ext(&p) {
@@ -1848,10 +1815,10 @@ fn ensure_parent_dir(path: &std::path::Path) -> Result<(), VisionError> {
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent).map_err(|e| {
-            VisionError::Io(format!(
-                "Failed to create output directory `{}`: {e}",
-                parent.display()
-            ))
+            VisionError::io(
+                format!("Failed to create output directory `{}`", parent.display()),
+                e,
+            )
         })?;
     }
     Ok(())
@@ -1866,9 +1833,9 @@ pub fn save_rgba_output(img: &RgbaImage, path: &PathBuf) -> Result<(), VisionErr
         }
         _ => DynamicImage::ImageRgba8(img.clone()),
     };
-    dyn_img
-        .save_with_format(path, format)
-        .map_err(|e| VisionError::Io(format!("Failed to write image `{}`: {e}", path.display())))
+    dyn_img.save_with_format(path, format).map_err(|e| {
+        VisionError::image_decode(format!("Failed to write image `{}`", path.display()), e)
+    })
 }
 
 pub fn serialize_json<T: Serialize>(value: &T, pretty: bool) -> Result<String, VisionError> {
@@ -1877,7 +1844,7 @@ pub fn serialize_json<T: Serialize>(value: &T, pretty: bool) -> Result<String, V
     } else {
         serde_json::to_string(value)
     }
-    .map_err(|e| VisionError::Io(format!("Failed to serialize JSON output: {e}")))
+    .map_err(|e| VisionError::json("Failed to serialize JSON output", e))
 }
 
 pub fn write_json_output(
@@ -1887,25 +1854,17 @@ pub fn write_json_output(
 ) -> Result<(), VisionError> {
     match output_path {
         Some(path) => {
-            if let Some(parent) = path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                fs::create_dir_all(parent).map_err(|e| {
-                    VisionError::Io(format!(
-                        "Failed to create output directory `{}`: {e}",
-                        parent.display()
-                    ))
-                })?;
-            }
+            ensure_parent_dir(path)?;
             fs::write(path, format!("{json}\n")).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to write output file `{}`: {e}",
-                    path.display()
-                ))
+                VisionError::io(
+                    format!("Failed to write output file `{}`", path.display()),
+                    e,
+                )
             })
         }
-        None => writeln!(stdout, "{json}")
-            .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}"))),
+        None => {
+            writeln!(stdout, "{json}").map_err(|e| VisionError::io("Failed to write to stdout", e))
+        }
     }
 }
 
@@ -1918,17 +1877,16 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 .and_then(subcommand_help_text)
                 .map(str::to_string)
                 .unwrap_or_else(general_help_text);
-            write!(stdout, "{text}")
-                .map_err(|e| VisionError::Io(format!("Failed to write help output: {e}")))
+            write!(stdout, "{text}").map_err(|e| VisionError::io("Failed to write help output", e))
         }
         CliCommand::Version => writeln!(stdout, "pure-sift {}", env!("CARGO_PKG_VERSION"))
-            .map_err(|e| VisionError::Io(format!("Failed to write version output: {e}"))),
+            .map_err(|e| VisionError::io("Failed to write version output", e)),
         CliCommand::Extract(args) => {
             let raw_bytes = fs::read(&args.image_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read image `{}`: {e}",
-                    args.image_path.display()
-                ))
+                VisionError::io(
+                    format!("Failed to read image `{}`", args.image_path.display()),
+                    e,
+                )
             })?;
             let response = run_extract_from_bytes_with_options(
                 &raw_bytes,
@@ -1957,16 +1915,19 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
         }
         CliCommand::Match(args) => {
             let query_bytes = fs::read(&args.query_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read query image `{}`: {e}",
-                    args.query_path.display()
-                ))
+                VisionError::io(
+                    format!("Failed to read query image `{}`", args.query_path.display()),
+                    e,
+                )
             })?;
             let target_bytes = fs::read(&args.target_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read target image `{}`: {e}",
-                    args.target_path.display()
-                ))
+                VisionError::io(
+                    format!(
+                        "Failed to read target image `{}`",
+                        args.target_path.display()
+                    ),
+                    e,
+                )
             })?;
             let response = run_match_from_bytes(
                 &query_bytes,
@@ -2003,10 +1964,10 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
         }
         CliCommand::Visualize(args) => {
             let raw_bytes = fs::read(&args.image_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read image `{}`: {e}",
-                    args.image_path.display()
-                ))
+                VisionError::io(
+                    format!("Failed to read image `{}`", args.image_path.display()),
+                    e,
+                )
             })?;
             let (rendered, count) = run_visualize_features_rgba(
                 &raw_bytes,
@@ -2024,20 +1985,23 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 rendered.height(),
                 args.output_path.display()
             )
-            .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}")))
+            .map_err(|e| VisionError::io("Failed to write to stdout", e))
         }
         CliCommand::VisualizeMatches(args) => {
             let query_bytes = fs::read(&args.query_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read query image `{}`: {e}",
-                    args.query_path.display()
-                ))
+                VisionError::io(
+                    format!("Failed to read query image `{}`", args.query_path.display()),
+                    e,
+                )
             })?;
             let target_bytes = fs::read(&args.target_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read target image `{}`: {e}",
-                    args.target_path.display()
-                ))
+                VisionError::io(
+                    format!(
+                        "Failed to read target image `{}`",
+                        args.target_path.display()
+                    ),
+                    e,
+                )
             })?;
             let (canvas, shown, raw_count) = run_visualize_matches_rgba(
                 &query_bytes,
@@ -2066,20 +2030,23 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 canvas.height(),
                 args.output_path.display()
             )
-            .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}")))
+            .map_err(|e| VisionError::io("Failed to write to stdout", e))
         }
         CliCommand::Align(args) => {
             let query_bytes = fs::read(&args.query_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read query image `{}`: {e}",
-                    args.query_path.display()
-                ))
+                VisionError::io(
+                    format!("Failed to read query image `{}`", args.query_path.display()),
+                    e,
+                )
             })?;
             let target_bytes = fs::read(&args.target_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read target image `{}`: {e}",
-                    args.target_path.display()
-                ))
+                VisionError::io(
+                    format!(
+                        "Failed to read target image `{}`",
+                        args.target_path.display()
+                    ),
+                    e,
+                )
             })?;
             let (stitched, inliers) = run_align_images_rgba(
                 &query_bytes,
@@ -2107,7 +2074,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 stitched.height(),
                 args.output_path.display()
             )
-            .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}")))
+            .map_err(|e| VisionError::io("Failed to write to stdout", e))
         }
         CliCommand::CatalogBuild(args) => {
             let image_paths = collect_image_files(&args.inputs)?;
@@ -2130,7 +2097,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
             let indexed_entries: Result<Vec<IndexedEntryTuple>, VisionError> = path_iter
                 .map(|path| {
                     let raw_bytes = fs::read(path).map_err(|e| {
-                        VisionError::Io(format!("Failed to read `{}`: {e}", path.display()))
+                        VisionError::io(format!("Failed to read `{}`", path.display()), e)
                     })?;
                     let resp = run_extract_from_bytes(
                         &raw_bytes, octaves, scales, threshold, true, false,
@@ -2152,22 +2119,23 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
 
             catalog
                 .save_auto(&args.output_path, args.pretty)
-                .map_err(VisionError::Io)?;
+                .map_err(VisionError::Runtime)?;
             writeln!(
                 stdout,
                 "Indexed {} images -> {}",
                 catalog.entries.len(),
                 args.output_path.display()
             )
-            .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}")))
+            .map_err(|e| VisionError::io("Failed to write to stdout", e))
         }
         CliCommand::CatalogSearch(args) => {
-            let catalog = FeatureCatalog::load_auto(&args.catalog_path).map_err(VisionError::Io)?;
+            let catalog =
+                FeatureCatalog::load_auto(&args.catalog_path).map_err(VisionError::Runtime)?;
             let query_bytes = fs::read(&args.query_path).map_err(|e| {
-                VisionError::Io(format!(
-                    "Failed to read query image `{}`: {e}",
-                    args.query_path.display()
-                ))
+                VisionError::io(
+                    format!("Failed to read query image `{}`", args.query_path.display()),
+                    e,
+                )
             })?;
             let response = run_catalog_search_from_bytes(
                 &catalog,
@@ -2196,7 +2164,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
             let mut decoded = Vec::with_capacity(args.image_paths.len());
             for path in &args.image_paths {
                 let raw = fs::read(path).map_err(|e| {
-                    VisionError::Io(format!("Failed to read `{}`: {e}", path.display()))
+                    VisionError::io(format!("Failed to read `{}`", path.display()), e)
                 })?;
                 let dyn_img = decode_validated_dynamic_image(&raw, false)
                     .map_err(|e| map_image_prefix(&format!("Image `{}`", path.display()), e))?;
@@ -2226,7 +2194,7 @@ pub fn execute_cli_command(cmd: &CliCommand, stdout: &mut impl Write) -> Result<
                 result.image.height(),
                 args.output_path.display()
             )
-            .map_err(|e| VisionError::Io(format!("Failed to write to stdout: {e}")))
+            .map_err(|e| VisionError::io("Failed to write to stdout", e))
         }
         CliCommand::Serve { .. } => Ok(()),
     }

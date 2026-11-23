@@ -231,6 +231,7 @@ pub fn invert_matrix_3x3(m: &[[f32; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     ])
 }
 
+/// Projects `(x, y)` through a double-precision 3x3 homography matrix `m`.
 #[inline]
 pub fn project_f64(m: &[[f64; 3]; 3], x: f64, y: f64) -> Option<(f64, f64)> {
     let w = m[2][0] * x + m[2][1] * y + m[2][2];
