@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,7 +20,11 @@ jobs:
           cargo test --release
           cargo publish --dry-run --locked
       - name: Publish to crates.io
-        if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
+        run: |
+          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
+            cargo publish --locked
+          else
+            echo "CARGO_REGISTRY_TOKEN not configured; skipping live crates.io publish."
+          fi
